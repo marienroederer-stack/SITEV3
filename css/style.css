@@ -351,6 +351,58 @@ h3 { font-size: 1.2rem; }
   border: 1px solid var(--border);
 }
 
+/* Login (espace client) */
+.login-card {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 36px 32px;
+  max-width: 380px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.login-form { display: flex; flex-direction: column; gap: 16px; }
+
+.form-field { display: flex; flex-direction: column; gap: 6px; }
+.form-field label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--blue-dark);
+}
+.form-field input {
+  font-family: var(--font);
+  font-size: 0.95rem;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--white);
+  color: var(--text);
+}
+.form-field input:focus {
+  outline: none;
+  border-color: var(--blue-light);
+  box-shadow: 0 0 0 3px rgba(63,178,255,0.2);
+}
+
+.login-submit { width: 100%; text-align: center; border: none; cursor: pointer; }
+
+.login-forgot {
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--blue-light);
+  font-weight: 600;
+  cursor: pointer;
+}
+.login-forgot:hover { text-decoration: underline; }
+
+.login-alert {
+  display: block;
+  text-align: center;
+  font-size: 0.85rem;
+  min-height: 1.2em;
+}
+
 /* Footer */
 .site-footer {
   background: var(--blue-dark);
