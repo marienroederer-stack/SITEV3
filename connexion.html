@@ -26,10 +26,25 @@
       <h2>Accéder à votre agenda</h2>
       <p class="section-lead" style="margin-left:auto; margin-right:auto;">
         La gestion de votre agenda est assurée via notre outil partenaire WZ-Conseil.
-        Cliquez ci-dessous pour accéder à votre espace de connexion.
+        Connectez-vous ci-dessous pour accéder à votre espace.
       </p>
-      <!-- TODO: remplacer par l'URL réelle de connexion WZ-Conseil -->
-      <a href="#" class="btn btn-primary">Se connecter à l'espace client</a>
+
+      <div class="login-card">
+        <form id="WZLoginForm" method="post" class="login-form">
+          <div class="form-field">
+            <label for="WZInputEmail">Email</label>
+            <input id="WZInputEmail" type="email" placeholder="Email" required autofocus>
+          </div>
+          <div class="form-field">
+            <label for="WZInputPassword">Mot de passe</label>
+            <input id="WZInputPassword" type="password" placeholder="Mot de passe" required>
+          </div>
+          <button type="submit" class="btn btn-primary login-submit">Se connecter</button>
+          <a id="WZLinkPassword" class="login-forgot">Mot de passe oublié ?</a>
+          <span id="WZLoginAlert" class="login-alert"></span>
+        </form>
+      </div>
+
       <p style="margin-top:24px;"><a href="index.html">&larr; Retour à l'accueil</a></p>
     </div>
   </section>
@@ -41,5 +56,8 @@
     <p>&copy; 2026 DOCTEL — Télésecrétariat médical, Clermont-Ferrand.</p>
   </div>
 </footer>
+
+<script src="https://cdn.wz-agenda.net/assets/js/login.js"></script>
+<script>window.onload = WZInit;</script>
 </body>
 </html>
