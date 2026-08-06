@@ -21,3 +21,10 @@ def db_path() -> Path:
 
 def key_path() -> Path:
     return app_data_dir() / "secret.key"
+
+
+def resource_path(relative: str) -> Path:
+    """Chemin vers un fichier embarqué (ex: icon.ico), que l'app tourne depuis les
+    sources ou depuis l'exécutable PyInstaller (données extraites dans sys._MEIPASS)."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base / relative
