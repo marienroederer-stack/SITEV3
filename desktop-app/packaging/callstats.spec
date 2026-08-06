@@ -7,7 +7,7 @@ a = Analysis(
     ["../main.py"],
     pathex=["."],
     binaries=[],
-    datas=[],
+    datas=[("icon.ico", "."), ("icon.png", ".")],
     hiddenimports=["PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore"],
     hookspath=[],
     hooksconfig={},
@@ -23,7 +23,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="DoctelStatsAppels",
+    name="DOCTEL - analyse appels entrants",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -32,4 +32,5 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,
     onefile=True,
+    icon="icon.ico",
 )
