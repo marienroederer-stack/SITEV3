@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QMarginsF, Qt
-from PySide6.QtGui import QPageLayout, QPageSize
+from PySide6.QtGui import QIcon, QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -31,9 +31,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from . import db, ftp_publish, importer, report, stats
+from .config import resource_path
 from .db import Client
 
-APP_TITLE = "DOCTEL — Statistiques d'appels"
+APP_TITLE = "DOCTEL - analyse appels entrants"
 
 
 class ClientsSettingsTab(QWidget):
@@ -303,6 +304,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
+        self.setWindowIcon(QIcon(str(resource_path("icon.ico"))))
         self.resize(1200, 900)
 
         self.conn = db.connect()
@@ -513,6 +515,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(resource_path("icon.ico"))))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
