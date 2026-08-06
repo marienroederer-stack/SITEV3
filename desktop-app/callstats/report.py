@@ -1,9 +1,9 @@
 """Génération du rapport HTML autonome (interactif à l'écran, imprimable en PDF)."""
 
 import html
-from datetime import date, datetime
+from datetime import date
 
-from . import db
+from . import holidays
 from .stats import (
     JOURS_SEMAINE,
     SEUIL_1_SECONDES,
@@ -63,20 +63,34 @@ def _text_color_for(bg_hex: str) -> str:
     return "#1a1a2e" if luminance > 0.55 else "#ffffff"
 
 
+def _off_day_label(d: date) -> str:
+    """Raison pour laquelle le jour est grisé (dimanche / jour férié), ou chaîne vide si ouvré."""
+    ferie = holidays.jour_ferie_label(d)
+    if ferie:
+        return ferie
+    if d.weekday() == 6:
+        return "Dimanche"
+    return ""
+
+
 def _build_day_grid_table(data: ReportData) -> str:
     max_count = max((cell.count for cell in data.day_grid.values()), default=0)
 
     header_cells = ['<th class="corner sticky-col sticky-row">Créneau</th>', '<th class="total-col sticky-row">TOTAL</th>']
     for d in data.days:
-        cls = "sunday sticky-row" if d.weekday() == 6 else "sticky-row"
-        header_cells.append(f'<th class="{cls}">{_JOURS_ABBR[d.weekday()]}<br>{d.strftime("%d/%m")}</th>')
+        off_label = _off_day_label(d)
+        cls = "off-day sticky-row" if off_label else "sticky-row"
+        title_attr = f' title="{html.escape(off_label)}"' if off_label else ""
+        header_cells.append(
+            f'<th class="{cls}"{title_attr}>{_JOURS_ABBR[d.weekday()]}<br>{d.strftime("%d/%m")}</th>'
+        )
     header_row = f"<tr>{''.join(header_cells)}</tr>"
 
     total_row_cells = ['<th class="slot-label sticky-col">TOTAL</th>']
     total_row_cells.append(f'<td class="total-col total-cell">{data.total_calls}</td>')
     for d in data.days:
-        if d.weekday() == 6:
-            total_row_cells.append('<td class="closed sunday">—</td>')
+        if _off_day_label(d):
+            total_row_cells.append('<td class="closed off-day">—</td>')
             continue
         cell = data.day_totals.get(d, GridCell())
         tooltip = html.escape(
@@ -102,8 +116,8 @@ def _build_day_grid_table(data: ReportData) -> str:
 
         for d in data.days:
             weekday = d.weekday()
-            if weekday == 6:
-                cells.append('<td class="closed sunday">—</td>')
+            if _off_day_label(d):
+                cells.append('<td class="closed off-day">—</td>')
                 continue
             valid_slots = SLOTS_SAMEDI if weekday == 5 else SLOTS_SEMAINE
             if (h, m) not in valid_slots:
@@ -182,7 +196,10 @@ def _build_recap_table(data: ReportData) -> str:
     moy_cells.append('<td class="total-cell">—</td>')
     rows_html.append(f"<tr>{''.join(moy_cells)}</tr>")
 
-    return f'<table class="recap-table"><thead>{header}</thead><tbody>{"".join(rows_html)}</tbody></table>'
+    return (
+        '<div class="table-scroll"><table class="recap-table">'
+        f"<thead>{header}</thead><tbody>{''.join(rows_html)}</tbody></table></div>"
+    )
 
 
 TEMPLATE = """<!doctype html>
@@ -233,22 +250,21 @@ TEMPLATE = """<!doctype html>
     background: var(--blue-dark); color: #fff; border: none; border-radius: 8px;
     padding: 10px 18px; font-size: 0.9rem; cursor: pointer; margin-right: 8px;
   }}
-  footer {{ margin-top: 40px; color: var(--text-muted); font-size: 0.75rem; }}
-
-  .table-scroll {{ overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }}
-  table.day-grid-table {{ width: max-content; margin-bottom: 0; }}
+  .table-scroll {{ overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; width: 100%; }}
+  .table-scroll table {{ width: 100%; min-width: max-content; margin-bottom: 0; border: none; }}
   table.day-grid-table th, table.day-grid-table td {{ font-size: 0.72rem; padding: 4px 6px; min-width: 34px; }}
+  th.slot-label, td.total-col, th.total-col {{ width: 96px; min-width: 96px; }}
   th.sticky-col, td.total-col {{
     position: sticky; background: var(--bg-alt);
   }}
   th.sticky-col {{ left: 0; z-index: 3; }}
-  td.total-col, th.total-col {{ left: 82px; z-index: 2; }}
+  td.total-col, th.total-col {{ left: 96px; z-index: 2; }}
   th.sticky-row {{ position: sticky; top: 0; z-index: 4; }}
   th.corner {{ z-index: 5; left: 0; }}
   .total-cell {{ background: var(--bg-alt); font-weight: 700; }}
   .total-row th, .total-row td {{ background: #e9f0ff; font-weight: 700; }}
   .grand-total {{ color: var(--blue-dark); }}
-  th.sunday, td.sunday {{ background: #f0f0f0 !important; color: #bbb; }}
+  th.off-day, td.off-day {{ background: #f0f0f0 !important; color: #bbb; }}
 
   @media print {{
     .actions {{ display: none; }}
@@ -274,13 +290,11 @@ TEMPLATE = """<!doctype html>
 
   <h2>Détail jour par jour, par créneau de 30 minutes</h2>
   {day_grid_table}
-  <p class="note">Survolez une case pour voir la durée moyenne de communication. Lundi-vendredi 8h-20h, samedi 8h-12h, dimanche fermé (grisé).</p>
+  <p class="note">Survolez une case pour voir la durée moyenne de communication. Lundi-vendredi 8h-20h, samedi 8h-12h.</p>
 
   <h2>Récapitulatif par jour de semaine et tranche horaire</h2>
   {recap_table}
   <p class="note">Tous les jours identiques regroupés ensemble (ex : tous les lundis de la période). Survolez une case pour voir son pourcentage du total.</p>
-
-  <footer>Rapport généré le {generated_at} — DOCTEL, statistiques d'appels internes.</footer>
 </body>
 </html>
 """
@@ -292,7 +306,7 @@ def render_report(data: ReportData) -> str:
     dmt = _fmt_hms(data.total_seconds / data.total_calls) if data.total_calls else "—"
 
     return TEMPLATE.format(
-        title=html.escape(f"Statistiques d'appels — {client_label}"),
+        title=html.escape(f"Relevé des appels entrants — {client_label}"),
         start=_fr_date(data.period_start),
         end=_fr_date(data.period_end),
         total_calls=data.total_calls,
@@ -303,5 +317,4 @@ def render_report(data: ReportData) -> str:
         moyenne_hors_samedi=f"{data.moyenne_hors_samedi:.1f}".replace(".", ","),
         day_grid_table=_build_day_grid_table(data),
         recap_table=_build_recap_table(data),
-        generated_at=datetime.now().strftime("%d/%m/%Y à %H:%M"),
     )
