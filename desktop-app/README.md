@@ -67,3 +67,21 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
+
+Les données (base SQLite + clé de chiffrement) sont stockées dans
+`%APPDATA%\DoctelCallStats\`.
+
+## Construire le .exe
+
+Deux options :
+
+1. **Automatique** : l'onglet Actions du dépôt GitHub contient un workflow
+   "Build Windows executable" (déclenchable manuellement) qui produit
+   `DOCTEL - analyse appels entrants.exe` en artefact téléchargeable — aucune
+   installation nécessaire de votre côté.
+2. **Locale** (sur une machine Windows) :
+
+   ```powershell
+   cd desktop-app
+   pip install pyinstaller
+   pyinstaller packaging/callstats.spec
