@@ -34,5 +34,5 @@ jobs:
       - name: Publier l'exécutable
         uses: actions/upload-artifact@v4
         with:
-          name: DoctelStatsAppels-windows
-          path: desktop-app/dist/DoctelStatsAppels.exe
+          name: DOCTEL-analyse-appels-entrants-windows
+          path: "desktop-app/dist/DOCTEL - analyse appels entrants.exe"
