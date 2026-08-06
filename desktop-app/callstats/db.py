@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS clients (
     numero_appele   TEXT PRIMARY KEY,
     nom_appele      TEXT NOT NULL,
     slug            TEXT NOT NULL UNIQUE,
-    cycle_start_day INTEGER NOT NULL DEFAULT 1
+    cycle_start_day INTEGER NOT NULL DEFAULT 1,
+    display_name    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS appels (
@@ -39,7 +40,16 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Ajoute les colonnes introduites après la création initiale des bases existantes."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(clients)")}
+    if "display_name" not in columns:
+        conn.execute("ALTER TABLE clients ADD COLUMN display_name TEXT")
+        conn.commit()
 
 
 def slugify(text: str) -> str:
@@ -64,13 +74,25 @@ class Client:
     nom_appele: str
     slug: str
     cycle_start_day: int
+    display_name: Optional[str] = None
+
+    @property
+    def label(self) -> str:
+        """Nom affiché à l'écran et dans les rapports (personnalisable, sinon le nom du fichier importé)."""
+        return self.display_name if self.display_name else self.nom_appele
+
+
+def _client_from_row(row: sqlite3.Row) -> Client:
+    return Client(
+        row["numero_appele"], row["nom_appele"], row["slug"], row["cycle_start_day"], row["display_name"]
+    )
 
 
 def get_or_create_client(conn: sqlite3.Connection, numero_appele: str, nom_appele: str) -> Client:
     row = conn.execute("SELECT * FROM clients WHERE numero_appele = ?", (numero_appele,)).fetchone()
     if row:
         # Le nom peut légèrement varier d'un export à l'autre (espaces...) ; on garde le premier connu.
-        return Client(row["numero_appele"], row["nom_appele"], row["slug"], row["cycle_start_day"])
+        return _client_from_row(row)
     slug = unique_slug(conn, slugify(nom_appele))
     conn.execute(
         "INSERT INTO clients (numero_appele, nom_appele, slug, cycle_start_day) VALUES (?, ?, ?, 1)",
@@ -80,21 +102,25 @@ def get_or_create_client(conn: sqlite3.Connection, numero_appele: str, nom_appel
 
 
 def list_clients(conn: sqlite3.Connection) -> list[Client]:
-    rows = conn.execute("SELECT * FROM clients ORDER BY nom_appele COLLATE NOCASE").fetchall()
-    return [Client(r["numero_appele"], r["nom_appele"], r["slug"], r["cycle_start_day"]) for r in rows]
+    rows = conn.execute(
+        "SELECT * FROM clients ORDER BY COALESCE(display_name, nom_appele) COLLATE NOCASE"
+    ).fetchall()
+    return [_client_from_row(r) for r in rows]
 
 
 def get_client(conn: sqlite3.Connection, numero_appele: str) -> Optional[Client]:
     row = conn.execute("SELECT * FROM clients WHERE numero_appele = ?", (numero_appele,)).fetchone()
     if not row:
         return None
-    return Client(row["numero_appele"], row["nom_appele"], row["slug"], row["cycle_start_day"])
+    return _client_from_row(row)
 
 
-def update_client(conn: sqlite3.Connection, numero_appele: str, slug: str, cycle_start_day: int) -> None:
+def update_client(
+    conn: sqlite3.Connection, numero_appele: str, slug: str, cycle_start_day: int, display_name: str = ""
+) -> None:
     conn.execute(
-        "UPDATE clients SET slug = ?, cycle_start_day = ? WHERE numero_appele = ?",
-        (slug, cycle_start_day, numero_appele),
+        "UPDATE clients SET slug = ?, cycle_start_day = ?, display_name = ? WHERE numero_appele = ?",
+        (slug, cycle_start_day, display_name.strip() or None, numero_appele),
     )
 
 

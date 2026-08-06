@@ -4,12 +4,22 @@ import html
 from datetime import date, datetime
 
 from . import db
-from .stats import JOURS_SEMAINE, SLOTS_SAMEDI, SLOTS_SEMAINE, TRANCHES, ReportData
+from .stats import (
+    JOURS_SEMAINE,
+    SEUIL_1_SECONDES,
+    SEUIL_2_SECONDES,
+    SLOTS_SAMEDI,
+    SLOTS_SEMAINE,
+    TRANCHES,
+    GridCell,
+    ReportData,
+)
 
 _MOIS = [
     "janvier", "février", "mars", "avril", "mai", "juin",
     "juillet", "août", "septembre", "octobre", "novembre", "décembre",
 ]
+_JOURS_ABBR = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
 
 
 def _fr_date(d: date) -> str:
@@ -21,6 +31,17 @@ def _fmt_duration(seconds: float) -> str:
     seconds = int(round(seconds))
     m, s = divmod(seconds, 60)
     return f"{m} min {s:02d} s" if m else f"{s} s"
+
+
+def _fmt_hms(seconds: float) -> str:
+    seconds = int(round(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _fmt_pct(value: float) -> str:
+    return f"{value:.1f}".replace(".", ",") + " %"
 
 
 def _heat_color(count: int, max_count: int) -> str:
@@ -42,45 +63,125 @@ def _text_color_for(bg_hex: str) -> str:
     return "#1a1a2e" if luminance > 0.55 else "#ffffff"
 
 
-def _build_grid_table(data: ReportData) -> str:
-    max_count = max((cell.count for cell in data.grid.values()), default=0)
-    rows_html = []
+def _build_day_grid_table(data: ReportData) -> str:
+    max_count = max((cell.count for cell in data.day_grid.values()), default=0)
+
+    header_cells = ['<th class="corner sticky-col sticky-row">Créneau</th>', '<th class="total-col sticky-row">TOTAL</th>']
+    for d in data.days:
+        cls = "sunday sticky-row" if d.weekday() == 6 else "sticky-row"
+        header_cells.append(f'<th class="{cls}">{_JOURS_ABBR[d.weekday()]}<br>{d.strftime("%d/%m")}</th>')
+    header_row = f"<tr>{''.join(header_cells)}</tr>"
+
+    total_row_cells = ['<th class="slot-label sticky-col">TOTAL</th>']
+    total_row_cells.append(f'<td class="total-col total-cell">{data.total_calls}</td>')
+    for d in data.days:
+        if d.weekday() == 6:
+            total_row_cells.append('<td class="closed sunday">—</td>')
+            continue
+        cell = data.day_totals.get(d, GridCell())
+        tooltip = html.escape(
+            f"{JOURS_SEMAINE[d.weekday()]} {d.strftime('%d/%m/%Y')} — {cell.count} appel(s). "
+            + (f"Durée moyenne : {_fmt_duration(cell.avg_seconds)}" if cell.count else "Aucun appel")
+        )
+        total_row_cells.append(f'<td class="total-cell" title="{tooltip}">{cell.count if cell.count else ""}</td>')
+    rows_html = [f'<tr class="total-row">{"".join(total_row_cells)}</tr>']
+
     for h, m in SLOTS_SEMAINE:
-        cells = [f"<th class=\"slot-label\">{h:02d}h{m:02d}</th>"]
-        for weekday in range(6):
+        end_h, end_m = (h, m + 30) if m == 0 else (h + 1, 0)
+        label = f"{h:02d}h{m:02d}-{end_h:02d}h{end_m:02d}"
+        cells = [f'<th class="slot-label sticky-col">{label}</th>']
+
+        slot_cell = data.slot_totals.get((h, m), GridCell())
+        slot_tooltip = html.escape(
+            f"Créneau {label} — {slot_cell.count} appel(s) sur la période. "
+            + (f"Durée moyenne : {_fmt_duration(slot_cell.avg_seconds)}" if slot_cell.count else "Aucun appel")
+        )
+        cells.append(
+            f'<td class="total-col total-cell" title="{slot_tooltip}">{slot_cell.count if slot_cell.count else ""}</td>'
+        )
+
+        for d in data.days:
+            weekday = d.weekday()
+            if weekday == 6:
+                cells.append('<td class="closed sunday">—</td>')
+                continue
             valid_slots = SLOTS_SAMEDI if weekday == 5 else SLOTS_SEMAINE
             if (h, m) not in valid_slots:
-                cells.append("<td class=\"closed\">—</td>")
+                cells.append('<td class="closed">—</td>')
                 continue
-            cell = data.grid.get((weekday, (h, m)))
+            cell = data.day_grid.get((d, (h, m)))
             count = cell.count if cell else 0
             bg = _heat_color(count, max_count)
             fg = _text_color_for(bg)
             avg = f"Durée moyenne : {_fmt_duration(cell.avg_seconds)}" if cell and cell.count else "Aucun appel"
-            tooltip = html.escape(f"{JOURS_SEMAINE[weekday]} {h:02d}h{m:02d} — {count} appel(s). {avg}")
+            tooltip = html.escape(f"{JOURS_SEMAINE[weekday]} {d.strftime('%d/%m/%Y')} {label} — {count} appel(s). {avg}")
             cells.append(
                 f'<td class="cell" style="background:{bg};color:{fg}" title="{tooltip}">'
                 f'{count if count else ""}</td>'
             )
         rows_html.append(f"<tr>{''.join(cells)}</tr>")
 
-    header = "<tr><th></th>" + "".join(f"<th>{d}</th>" for d in JOURS_SEMAINE) + "</tr>"
-    return f'<table class="grid-table"><thead>{header}</thead><tbody>{"".join(rows_html)}</tbody></table>'
+    return (
+        '<div class="table-scroll"><table class="day-grid-table">'
+        f"<thead>{header_row}</thead><tbody>{''.join(rows_html)}</tbody></table></div>"
+    )
 
 
 def _build_recap_table(data: ReportData) -> str:
-    max_count = max(data.recap.values(), default=0)
+    grand_total = data.total_calls
+    max_count = max((c.count for c in data.weekday_recap.values()), default=0)
+
+    header = "<tr><th></th>" + "".join(f"<th>{d}</th>" for d in JOURS_SEMAINE) + "<th>TOTAL</th></tr>"
+
     rows_html = []
-    for weekday, jour in enumerate(JOURS_SEMAINE):
-        cells = [f"<th class=\"slot-label\">{jour}</th>"]
-        for label, _, _ in TRANCHES:
-            count = data.recap.get((weekday, label), 0)
-            bg = _heat_color(count, max_count)
+    for label, _, _ in TRANCHES:
+        cells = [f'<th class="slot-label">{label}</th>']
+        tranche_total = 0
+        for weekday in range(6):
+            cell = data.weekday_recap.get((weekday, label), GridCell())
+            tranche_total += cell.count
+            bg = _heat_color(cell.count, max_count)
             fg = _text_color_for(bg)
-            cells.append(f'<td class="cell" style="background:{bg};color:{fg}">{count if count else ""}</td>')
+            pct = (cell.count / grand_total * 100) if grand_total else 0
+            avg = f" — durée moyenne : {_fmt_duration(cell.avg_seconds)}" if cell.count else ""
+            tooltip = html.escape(f"{JOURS_SEMAINE[weekday]} {label} — {cell.count} appel(s), {_fmt_pct(pct)} du total{avg}")
+            cells.append(f'<td class="cell" style="background:{bg};color:{fg}" title="{tooltip}">{cell.count if cell.count else ""}</td>')
+        pct_total = (tranche_total / grand_total * 100) if grand_total else 0
+        cells.append(f'<td class="total-cell" title="{html.escape(f"{_fmt_pct(pct_total)} du total")}">{tranche_total}</td>')
         rows_html.append(f"<tr>{''.join(cells)}</tr>")
 
-    header = "<tr><th></th>" + "".join(f"<th>{label}</th>" for label, _, _ in TRANCHES) + "</tr>"
+    # Ligne TOTAL
+    total_cells = ['<th class="slot-label">TOTAL</th>']
+    for weekday in range(6):
+        cell = data.weekday_totals.get(weekday, GridCell())
+        pct = (cell.count / grand_total * 100) if grand_total else 0
+        tooltip = html.escape(f"{JOURS_SEMAINE[weekday]} — {cell.count} appel(s), {_fmt_pct(pct)} du total")
+        total_cells.append(f'<td class="total-cell" title="{tooltip}">{cell.count}</td>')
+    total_cells.append(f'<td class="total-cell grand-total">{grand_total}</td>')
+    rows_html.append(f'<tr class="total-row">{"".join(total_cells)}</tr>')
+
+    # Ligne NB Jours avec appels
+    jours_cells = ['<th class="slot-label">NB jours avec appels</th>']
+    for weekday in range(6):
+        n = data.weekday_days_with_calls.get(weekday, 0)
+        if weekday == 5:  # samedi affiché entre parenthèses, exclu du total
+            jours_cells.append(f'<td class="muted">({n})</td>')
+        else:
+            jours_cells.append(f"<td>{n}</td>")
+    total_jours = sum(data.weekday_days_with_calls.get(w, 0) for w in range(5))
+    jours_cells.append(f'<td class="total-cell">{total_jours}</td>')
+    rows_html.append(f"<tr>{''.join(jours_cells)}</tr>")
+
+    # Ligne MOYENNE (appels / jour avec appels)
+    moy_cells = ['<th class="slot-label">Moyenne / jour</th>']
+    for weekday in range(6):
+        n = data.weekday_days_with_calls.get(weekday, 0)
+        total = data.weekday_totals.get(weekday, GridCell()).count
+        moy = f"{total / n:.1f}".replace(".", ",") if n else "—"
+        moy_cells.append(f"<td>{moy}</td>")
+    moy_cells.append('<td class="total-cell">—</td>')
+    rows_html.append(f"<tr>{''.join(moy_cells)}</tr>")
+
     return f'<table class="recap-table"><thead>{header}</thead><tbody>{"".join(rows_html)}</tbody></table>'
 
 
@@ -120,11 +221,12 @@ TEMPLATE = """<!doctype html>
   .summary .stat .label {{ font-size: 0.85rem; color: var(--text-muted); }}
   h2 {{ font-size: 1.15rem; color: var(--blue-dark); margin: 32px 0 12px; }}
   table {{ border-collapse: collapse; width: 100%; margin-bottom: 8px; }}
-  th, td {{ border: 1px solid var(--border); text-align: center; padding: 6px 4px; font-size: 0.82rem; }}
+  th, td {{ border: 1px solid var(--border); text-align: center; padding: 6px 4px; font-size: 0.82rem; white-space: nowrap; }}
   th {{ background: var(--bg-alt); color: var(--blue-dark); font-weight: 600; }}
-  td.slot-label, th.slot-label {{ text-align: right; padding-right: 10px; white-space: nowrap; }}
+  td.slot-label, th.slot-label {{ text-align: right; padding-right: 10px; }}
   td.closed {{ background: #fafafa; color: #ccc; }}
   td.cell {{ cursor: default; font-weight: 600; }}
+  td.muted {{ color: var(--text-muted); }}
   .note {{ color: var(--text-muted); font-size: 0.8rem; margin-top: 8px; }}
   .actions {{ margin: 24px 0; }}
   .actions button {{
@@ -132,9 +234,27 @@ TEMPLATE = """<!doctype html>
     padding: 10px 18px; font-size: 0.9rem; cursor: pointer; margin-right: 8px;
   }}
   footer {{ margin-top: 40px; color: var(--text-muted); font-size: 0.75rem; }}
+
+  .table-scroll {{ overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }}
+  table.day-grid-table {{ width: max-content; margin-bottom: 0; }}
+  table.day-grid-table th, table.day-grid-table td {{ font-size: 0.72rem; padding: 4px 6px; min-width: 34px; }}
+  th.sticky-col, td.total-col {{
+    position: sticky; background: var(--bg-alt);
+  }}
+  th.sticky-col {{ left: 0; z-index: 3; }}
+  td.total-col, th.total-col {{ left: 82px; z-index: 2; }}
+  th.sticky-row {{ position: sticky; top: 0; z-index: 4; }}
+  th.corner {{ z-index: 5; left: 0; }}
+  .total-cell {{ background: var(--bg-alt); font-weight: 700; }}
+  .total-row th, .total-row td {{ background: #e9f0ff; font-weight: 700; }}
+  .grand-total {{ color: var(--blue-dark); }}
+  th.sunday, td.sunday {{ background: #f0f0f0 !important; color: #bbb; }}
+
   @media print {{
     .actions {{ display: none; }}
     body {{ padding: 0; }}
+    @page {{ size: A4 landscape; margin: 10mm; }}
+    table.day-grid-table th, table.day-grid-table td {{ font-size: 0.6rem; padding: 2px 3px; }}
   }}
 </style>
 </head>
@@ -146,16 +266,19 @@ TEMPLATE = """<!doctype html>
   <div class="summary">
     <div class="stat"><div class="value">{total_calls}</div><div class="label">Appels aboutis</div></div>
     <div class="stat"><div class="value">{total_duration}</div><div class="label">Durée totale de communication</div></div>
-    <div class="stat"><div class="value">{avg_duration}</div><div class="label">Durée moyenne par appel</div></div>
+    <div class="stat"><div class="value">{dmt}</div><div class="label">Durée moyenne de traitement (DMT)</div></div>
+    <div class="stat"><div class="value">{over_seuil1}</div><div class="label">Appels &gt; 3 min</div></div>
+    <div class="stat"><div class="value">{over_seuil2}</div><div class="label">Appels &gt; 6 min</div></div>
+    <div class="stat"><div class="value">{moyenne_hors_samedi}</div><div class="label">Moyenne appels/jour (hors samedi)</div></div>
   </div>
 
-  <h2>Répartition des appels par créneau de 30 minutes</h2>
-  {grid_table}
-  <p class="note">Survolez une case pour voir la durée moyenne de communication sur ce créneau. Lundi-vendredi 8h-20h, samedi 8h-12h.</p>
+  <h2>Détail jour par jour, par créneau de 30 minutes</h2>
+  {day_grid_table}
+  <p class="note">Survolez une case pour voir la durée moyenne de communication. Lundi-vendredi 8h-20h, samedi 8h-12h, dimanche fermé (grisé).</p>
 
   <h2>Récapitulatif par jour de semaine et tranche horaire</h2>
   {recap_table}
-  <p class="note">Nombre d'appels reçus, tous les jours identiques regroupés ensemble (ex : tous les lundis de la période).</p>
+  <p class="note">Tous les jours identiques regroupés ensemble (ex : tous les lundis de la période). Survolez une case pour voir son pourcentage du total.</p>
 
   <footer>Rapport généré le {generated_at} — DOCTEL, statistiques d'appels internes.</footer>
 </body>
@@ -164,9 +287,9 @@ TEMPLATE = """<!doctype html>
 
 
 def render_report(data: ReportData) -> str:
-    client_label = data.client.nom_appele if data.client else "Tous les clients"
+    client_label = data.client.label if data.client else "Tous les clients"
     total_duration = _fmt_duration(data.total_seconds)
-    avg_duration = _fmt_duration(data.total_seconds / data.total_calls) if data.total_calls else "—"
+    dmt = _fmt_hms(data.total_seconds / data.total_calls) if data.total_calls else "—"
 
     return TEMPLATE.format(
         title=html.escape(f"Statistiques d'appels — {client_label}"),
@@ -174,8 +297,11 @@ def render_report(data: ReportData) -> str:
         end=_fr_date(data.period_end),
         total_calls=data.total_calls,
         total_duration=total_duration,
-        avg_duration=avg_duration,
-        grid_table=_build_grid_table(data),
+        dmt=dmt,
+        over_seuil1=data.count_over_seuil1,
+        over_seuil2=data.count_over_seuil2,
+        moyenne_hors_samedi=f"{data.moyenne_hors_samedi:.1f}".replace(".", ","),
+        day_grid_table=_build_day_grid_table(data),
         recap_table=_build_recap_table(data),
         generated_at=datetime.now().strftime("%d/%m/%Y à %H:%M"),
     )

@@ -6,7 +6,8 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QMarginsF, Qt
+from PySide6.QtGui import QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -42,14 +43,21 @@ class ClientsSettingsTab(QWidget):
         self.on_saved = on_saved
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
-            "Jour de début de cycle mensuel pour chaque client (1 = mois civil). "
-            "Ce réglage est fixe : il ne change qu'à la demande."
-        ))
+        info_label = QLabel(
+            "Le \"Nom (fichier import)\" vient du listing d'appels et n'est pas modifiable ici (il sert à "
+            "retrouver le client lors des imports). Le \"Nom affiché\" est optionnel : renseignez-le pour "
+            "remplacer ce nom dans l'application et les rapports (ex : \"Dr BERTRAND-JARROUSSE Véronique\" "
+            "pour un client nommé \"BERTRAND\" dans le fichier). Le jour de cycle est fixe : 1 = mois civil."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Client", "Numéro appelé", "Identifiant (slug)", "Jour de cycle"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Nom (fichier import)", "Nom affiché", "Numéro appelé", "Identifiant (slug)", "Jour de cycle"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         layout.addWidget(self.table)
 
         save_btn = QPushButton("Enregistrer les modifications")
@@ -62,22 +70,26 @@ class ClientsSettingsTab(QWidget):
         clients = db.list_clients(self.conn)
         self.table.setRowCount(len(clients))
         for row, c in enumerate(clients):
-            self.table.setItem(row, 0, QTableWidgetItem(c.nom_appele))
+            nom_item = QTableWidgetItem(c.nom_appele)
+            nom_item.setFlags(nom_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, nom_item)
+            self.table.setItem(row, 1, QTableWidgetItem(c.display_name or ""))
             numero_item = QTableWidgetItem(c.numero_appele)
             numero_item.setFlags(numero_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 1, numero_item)
-            self.table.setItem(row, 2, QTableWidgetItem(c.slug))
+            self.table.setItem(row, 2, numero_item)
+            self.table.setItem(row, 3, QTableWidgetItem(c.slug))
             spin = QSpinBox()
             spin.setRange(1, 31)
             spin.setValue(c.cycle_start_day)
-            self.table.setCellWidget(row, 3, spin)
+            self.table.setCellWidget(row, 4, spin)
 
     def _save(self):
         for row in range(self.table.rowCount()):
-            numero = self.table.item(row, 1).text()
-            slug = self.table.item(row, 2).text().strip() or db.slugify(self.table.item(row, 0).text())
-            spin: QSpinBox = self.table.cellWidget(row, 3)
-            db.update_client(self.conn, numero, slug, spin.value())
+            numero = self.table.item(row, 2).text()
+            display_name = self.table.item(row, 1).text().strip()
+            slug = self.table.item(row, 3).text().strip() or db.slugify(self.table.item(row, 0).text())
+            spin: QSpinBox = self.table.cellWidget(row, 4)
+            db.update_client(self.conn, numero, slug, spin.value(), display_name)
         self.conn.commit()
         self.on_saved()
         QMessageBox.information(self, APP_TITLE, "Réglages clients enregistrés.")
@@ -171,17 +183,116 @@ class PublishSettingsTab(QWidget):
         return crypto_store.decrypt(encrypted) if encrypted else ""
 
 
+class ArchiveSettingsTab(QWidget):
+    def __init__(self, conn, on_purged):
+        super().__init__()
+        self.conn = conn
+        self.on_purged = on_purged
+
+        layout = QVBoxLayout(self)
+        info_label = QLabel(
+            "Exportez un mois civil en CSV pour vos archives. Une fois un ou plusieurs mois exportés, "
+            "le bouton en bas permet de supprimer d'un coup les appels de tous les mois déjà archivés "
+            "(utile si vous archivez plusieurs mois en retard)."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Mois", "Nb appels", "Statut"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        layout.addWidget(self.table)
+
+        export_btn = QPushButton("Exporter le mois sélectionné en CSV…")
+        export_btn.clicked.connect(self._export_selected)
+        layout.addWidget(export_btn)
+
+        self.purge_btn = QPushButton("Supprimer les appels des mois déjà archivés")
+        self.purge_btn.clicked.connect(self._purge)
+        layout.addWidget(self.purge_btn)
+
+        self._reload()
+
+    def _reload(self):
+        from . import archive
+
+        self._months = archive.list_months(self.conn)
+        self.table.setRowCount(len(self._months))
+        for row, m in enumerate(self._months):
+            self.table.setItem(row, 0, QTableWidgetItem(archive.month_label(m.year_month)))
+            self.table.setItem(row, 1, QTableWidgetItem(str(m.call_count)))
+            if m.purged_at:
+                statut = f"Purgé le {m.purged_at[:10]}"
+            elif m.exported_at:
+                statut = f"Archivé le {m.exported_at[:10]}"
+            else:
+                statut = "Non archivé"
+            self.table.setItem(row, 2, QTableWidgetItem(statut))
+
+        purgeable = archive.list_purgeable(self.conn)
+        self.purge_btn.setEnabled(bool(purgeable))
+        self.purge_btn.setText(
+            f"Supprimer les appels des {len(purgeable)} mois déjà archivés"
+            if purgeable
+            else "Aucun mois archivé à supprimer"
+        )
+
+    def _export_selected(self):
+        from . import archive
+
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, APP_TITLE, "Sélectionnez d'abord un mois dans la liste.")
+            return
+        month = self._months[row]
+        default_name = f"appels-{month.year_month}.csv"
+        path_str, _ = QFileDialog.getSaveFileName(self, "Exporter en CSV", default_name, "CSV (*.csv)")
+        if not path_str:
+            return
+        count = archive.export_csv(self.conn, month.year_month, Path(path_str))
+        self._reload()
+        QMessageBox.information(self, APP_TITLE, f"{count} appel(s) exporté(s) vers {path_str}.")
+
+    def _purge(self):
+        from . import archive
+
+        purgeable = archive.list_purgeable(self.conn)
+        if not purgeable:
+            return
+        labels = ", ".join(archive.month_label(ym) for ym in purgeable)
+        confirm = QMessageBox.warning(
+            self,
+            APP_TITLE,
+            f"Supprimer définitivement les appels de : {labels} ?\n\n"
+            "Cette action est irréversible. Assurez-vous d'avoir bien exporté ces mois au préalable.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        result = archive.purge_archived(self.conn)
+        self._reload()
+        self.on_purged()
+        QMessageBox.information(
+            self, APP_TITLE, f"{result.rows_deleted} appel(s) supprimé(s) pour {len(result.months)} mois."
+        )
+
+
 class SettingsDialog(QDialog):
     def __init__(self, conn, on_clients_saved, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Réglages")
-        self.resize(650, 450)
+        self.resize(700, 500)
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         self.clients_tab = ClientsSettingsTab(conn, on_clients_saved)
         self.publish_tab = PublishSettingsTab(conn)
+        self.archive_tab = ArchiveSettingsTab(conn, on_clients_saved)
         tabs.addTab(self.clients_tab, "Clients")
         tabs.addTab(self.publish_tab, "Publication")
+        tabs.addTab(self.archive_tab, "Archivage")
         layout.addWidget(tabs)
         close_btn = QPushButton("Fermer")
         close_btn.clicked.connect(self.accept)
@@ -248,6 +359,9 @@ class MainWindow(QMainWindow):
 
         self.web_view = QWebEngineView()
         self.web_view.loadFinished.connect(self._on_report_loaded)
+        # Le bouton "Imprimer / Export PDF" du rapport appelle window.print(), qui ne fait rien
+        # dans une QWebEngineView sans ce relais : on le fait pointer vers notre propre export PDF.
+        self.web_view.page().printRequested.connect(self.on_export_pdf)
         root.addWidget(self.web_view, 1)
 
         self.reload_clients()
@@ -260,7 +374,7 @@ class MainWindow(QMainWindow):
         self.client_combo.clear()
         self.client_combo.addItem("Tous les clients", None)
         for c in db.list_clients(self.conn):
-            self.client_combo.addItem(c.nom_appele, c.numero_appele)
+            self.client_combo.addItem(c.label, c.numero_appele)
         self.client_combo.blockSignals(False)
 
     def current_client(self) -> Optional[Client]:
@@ -350,7 +464,8 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, APP_TITLE, "Échec de l'export PDF.")
 
-        self.web_view.page().printToPdf(done)
+        layout = QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Landscape, QMarginsF(10, 10, 10, 10))
+        self.web_view.page().printToPdf(done, layout)
 
     def on_export_html(self):
         if self.current_data is None:

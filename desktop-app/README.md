@@ -36,6 +36,17 @@ publier directement sur le site web.
    l'hébergeur configuré (Réglages > Publication), à une URL stable
    `<url de base>/<slug du client>.html`.
 
+## Réglages > Archivage
+
+Les appels importés restent en base indéfiniment (rien n'est purgé
+automatiquement). Depuis Réglages > Archivage :
+- **Exporter le mois sélectionné en CSV** génère un fichier d'archive et
+  marque le mois comme "archivé" (n'efface rien).
+- **Supprimer les appels des mois déjà archivés** supprime d'un coup les
+  appels de tous les mois exportés mais pas encore purgés — utile si
+  plusieurs mois sont archivés en retard. Action irréversible, confirmation
+  demandée à chaque fois.
+
 ## Réglages > Publication (FTP/SFTP)
 
 Les identifiants sont stockés localement, le mot de passe étant chiffré

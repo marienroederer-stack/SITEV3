@@ -1,7 +1,7 @@
 """Calcul des périodes de cycle client et agrégation des statistiques d'appel."""
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from sqlite3 import Connection
 from typing import Optional
@@ -20,6 +20,10 @@ TRANCHES = [
     ("14h-18h", 14, 18),
     ("18h-20h", 18, 20),
 ]
+
+# Seuils de durée de communication mis en avant dans le rapport (fixes, comme l'export actuel).
+SEUIL_1_SECONDES = 3 * 60
+SEUIL_2_SECONDES = 6 * 60
 
 
 def add_months(d: date, months: int) -> date:
@@ -63,8 +67,16 @@ class ReportData:
     client: Optional[db.Client]
     period_start: date
     period_end: date
-    grid: dict  # {(weekday, (h,m)): GridCell}
-    recap: dict  # {(weekday, tranche_label): int}
+    days: list  # toutes les dates civiles de la période, dans l'ordre
+    day_grid: dict  # {(date, (h,m)): GridCell} — détail jour par jour
+    day_totals: dict  # {date: GridCell} — total de la journée (toutes tranches)
+    slot_totals: dict  # {(h,m): GridCell} — total du créneau sur toute la période
+    weekday_recap: dict  # {(weekday, tranche_label): GridCell}
+    weekday_totals: dict  # {weekday: GridCell}
+    weekday_days_with_calls: dict  # {weekday: int}
+    moyenne_hors_samedi: float
+    count_over_seuil1: int
+    count_over_seuil2: int
     total_calls: int
     total_seconds: int
 
@@ -77,10 +89,21 @@ def build_report_data(
     end_iso = datetime.combine(period_end, datetime.max.time()).isoformat()
     rows = db.calls_for_client_range(conn, numero_appele, start_iso, end_iso)
 
-    grid: dict = {}
-    recap: dict = {}
+    days = []
+    d = period_start
+    while d <= period_end:
+        days.append(d)
+        d += timedelta(days=1)
+
+    day_grid: dict = {}
+    day_totals = {d: GridCell() for d in days}
+    slot_totals: dict = {}
+    weekday_recap: dict = {}
+    weekday_totals: dict = {}
     total_calls = 0
     total_seconds = 0
+    count_over_seuil1 = 0
+    count_over_seuil2 = 0
 
     for row in rows:
         dt = datetime.fromisoformat(row["date_heure"])
@@ -89,30 +112,67 @@ def build_report_data(
             continue  # dimanche : hors périmètre (pas de permanence)
 
         seconds = row["comm_seconds"]
+        call_date = dt.date()
+
         total_calls += 1
         total_seconds += seconds
+        if seconds > SEUIL_1_SECONDES:
+            count_over_seuil1 += 1
+        if seconds > SEUIL_2_SECONDES:
+            count_over_seuil2 += 1
+
+        day_cell = day_totals.setdefault(call_date, GridCell())
+        day_cell.count += 1
+        day_cell.total_seconds += seconds
 
         slot_minute = (dt.minute // 30) * 30
         slot = (dt.hour, slot_minute)
         valid_slots = SLOTS_SAMEDI if weekday == 5 else SLOTS_SEMAINE
         if slot in valid_slots:
-            key = (weekday, slot)
-            cell = grid.setdefault(key, GridCell())
+            cell = day_grid.setdefault((call_date, slot), GridCell())
             cell.count += 1
             cell.total_seconds += seconds
 
+            scell = slot_totals.setdefault(slot, GridCell())
+            scell.count += 1
+            scell.total_seconds += seconds
+
         for label, start_h, end_h in TRANCHES:
             if start_h <= dt.hour < end_h:
-                rkey = (weekday, label)
-                recap[rkey] = recap.get(rkey, 0) + 1
+                rcell = weekday_recap.setdefault((weekday, label), GridCell())
+                rcell.count += 1
+                rcell.total_seconds += seconds
+
+                wcell = weekday_totals.setdefault(weekday, GridCell())
+                wcell.count += 1
+                wcell.total_seconds += seconds
                 break
+
+    weekday_days_with_calls = {w: 0 for w in range(6)}
+    for d in days:
+        if d.weekday() > 5:
+            continue
+        if day_totals.get(d, GridCell()).count > 0:
+            weekday_days_with_calls[d.weekday()] += 1
+
+    total_days_lunven = sum(weekday_days_with_calls[w] for w in range(5))
+    total_calls_lunven = sum(weekday_totals.get(w, GridCell()).count for w in range(5))
+    moyenne_hors_samedi = total_calls_lunven / total_days_lunven if total_days_lunven else 0.0
 
     return ReportData(
         client=client,
         period_start=period_start,
         period_end=period_end,
-        grid=grid,
-        recap=recap,
+        days=days,
+        day_grid=day_grid,
+        day_totals=day_totals,
+        slot_totals=slot_totals,
+        weekday_recap=weekday_recap,
+        weekday_totals=weekday_totals,
+        weekday_days_with_calls=weekday_days_with_calls,
+        moyenne_hors_samedi=moyenne_hors_samedi,
+        count_over_seuil1=count_over_seuil1,
+        count_over_seuil2=count_over_seuil2,
         total_calls=total_calls,
         total_seconds=total_seconds,
     )
