@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS appels (
     numero_appele   TEXT NOT NULL REFERENCES clients(numero_appele),
     numero_appelant TEXT,
     date_heure      TEXT NOT NULL,
-    comm_seconds    INTEGER NOT NULL
+    comm_seconds    INTEGER NOT NULL,
+    tag             TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_appels_client_date ON appels(numero_appele, date_heure);
 
@@ -46,9 +47,14 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Ajoute les colonnes introduites après la création initiale des bases existantes."""
-    columns = {row["name"] for row in conn.execute("PRAGMA table_info(clients)")}
-    if "display_name" not in columns:
+    client_columns = {row["name"] for row in conn.execute("PRAGMA table_info(clients)")}
+    if "display_name" not in client_columns:
         conn.execute("ALTER TABLE clients ADD COLUMN display_name TEXT")
+        conn.commit()
+
+    appel_columns = {row["name"] for row in conn.execute("PRAGMA table_info(appels)")}
+    if "tag" not in appel_columns:
+        conn.execute("ALTER TABLE appels ADD COLUMN tag TEXT")
         conn.commit()
 
 
@@ -131,12 +137,13 @@ def insert_call(
     numero_appelant: str,
     date_heure: datetime,
     comm_seconds: int,
+    tag: str = "",
 ) -> bool:
     """Insère un appel ; retourne False si déjà présent (dédoublonnage par call_id)."""
     cur = conn.execute(
-        "INSERT OR IGNORE INTO appels (call_id, numero_appele, numero_appelant, date_heure, comm_seconds) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (call_id, numero_appele, numero_appelant, date_heure.isoformat(), comm_seconds),
+        "INSERT OR IGNORE INTO appels (call_id, numero_appele, numero_appelant, date_heure, comm_seconds, tag) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (call_id, numero_appele, numero_appelant, date_heure.isoformat(), comm_seconds, tag or None),
     )
     return cur.rowcount > 0
 
