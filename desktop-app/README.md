@@ -10,7 +10,7 @@ publier directement sur le site web.
 - Seuls les appels **entrants aboutis** sont comptabilisés (Type = entrant,
   Raison du rejet = normal ou vide).
 - La durée retenue est la colonne **Comm** (temps de communication réel).
-- Les appels dont la durée Comm est **inférieure à 10 secondes** ne sont pas
+- Les appels dont la durée Comm est **inférieure à 8 secondes** ne sont pas
   comptabilisés.
 - Le dédoublonnage entre deux imports successifs se fait via la colonne
   **Call Id** — un même fichier ou une période qui se chevauche peut être
