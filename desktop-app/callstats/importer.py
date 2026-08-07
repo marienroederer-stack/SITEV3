@@ -3,7 +3,7 @@
 Règles de filtrage (fixées avec le client) :
  - uniquement les appels entrants aboutis (Type = entrant, Raison du rejet = normal ou vide)
  - la durée retenue est la colonne "Comm" (temps de communication réel)
- - les appels de moins de 10 secondes de Comm ne sont pas comptabilisés
+ - les appels de moins de 8 secondes de Comm ne sont pas comptabilisés
  - dédoublonnage entre imports successifs via "Call Id"
 """
 
@@ -32,6 +32,7 @@ COLUMN_CANDIDATES = {
     "comm": ["comm"],
     "raison_rejet": ["raison du rejet"],
     "call_id": ["call id", "callid"],
+    "tag": ["tag"],
 }
 
 
@@ -166,7 +167,7 @@ def import_file(conn: Connection, path: Path) -> ImportResult:
             continue
 
         comm_seconds = parse_duration_seconds(cell("comm"))
-        if comm_seconds < 10:
+        if comm_seconds < 8:
             result.filtered_out += 1
             continue
 
@@ -199,6 +200,7 @@ def import_file(conn: Connection, path: Path) -> ImportResult:
             numero_appelant=str(cell("numero_appelant") or "").strip(),
             date_heure=call_dt,
             comm_seconds=comm_seconds,
+            tag=str(cell("tag") or "").strip(),
         )
         if inserted:
             result.inserted += 1
