@@ -202,6 +202,23 @@ def _build_recap_table(data: ReportData) -> str:
     )
 
 
+def _build_traitement_table(data: ReportData) -> str:
+    header = "<tr>" + "".join(f"<th>{html.escape(t.label)}</th>" for t in data.traitement) + "</tr>"
+    count_row = "<tr>" + "".join(f'<td class="cell">{t.count}</td>' for t in data.traitement) + "</tr>"
+    pct_row = "<tr>" + "".join(f'<td class="total-cell">{_fmt_pct(t.pct)}</td>' for t in data.traitement) + "</tr>"
+    return f'<table class="traitement-table"><thead>{header}</thead><tbody>{count_row}{pct_row}</tbody></table>'
+
+
+def _build_subdivision_table(data: ReportData) -> str:
+    sub = data.subdivision
+    header = "<tr>" + "".join(
+        f'<th>Attribution/report de RDV<br>Dr {html.escape(nom.title())}</th>' for nom in sub.names
+    ) + "</tr>"
+    count_row = "<tr>" + "".join(f'<td class="cell">{c}</td>' for c in sub.counts) + "</tr>"
+    pct_row = "<tr>" + "".join(f'<td class="total-cell">{_fmt_pct(p)}</td>' for p in sub.pcts) + "</tr>"
+    return f'<table class="traitement-table"><thead>{header}</thead><tbody>{count_row}{pct_row}</tbody></table>'
+
+
 TEMPLATE = """<!doctype html>
 <html lang="fr">
 <head>
@@ -295,6 +312,11 @@ TEMPLATE = """<!doctype html>
   <h2>Récapitulatif par jour de semaine et tranche horaire</h2>
   {recap_table}
   <p class="note">Tous les jours identiques regroupés ensemble (ex : tous les lundis de la période). Survolez une case pour voir son pourcentage du total.</p>
+
+  <h2>Traitement des appels</h2>
+  {traitement_table}
+  <p class="note">Comptage des tags contenant chaque terme (pointage manuel), majoré de 5&nbsp;% de marge d'erreur et arrondi à l'inférieur. Pourcentage sur le total d'appels du mois.</p>
+  {subdivision_section}
 </body>
 </html>
 """
@@ -304,6 +326,18 @@ def render_report(data: ReportData) -> str:
     client_label = data.client.label if data.client else "Tous les clients"
     total_duration = _fmt_duration(data.total_seconds)
     dmt = _fmt_hms(data.total_seconds / data.total_calls) if data.total_calls else "—"
+
+    if data.subdivision:
+        names = " / ".join(n.title() for n in data.subdivision.names)
+        subdivision_section = (
+            f"<h2>Répartition par médecin — {html.escape(names)}</h2>"
+            f"{_build_subdivision_table(data)}"
+            '<p class="note">Le 1er médecin du groupe absorbe l\'écart d\'arrondi : la somme des '
+            "3 comptages correspond exactement au total RDV ci-dessus, et la somme des "
+            "pourcentages fait exactement 100&nbsp;%.</p>"
+        )
+    else:
+        subdivision_section = ""
 
     return TEMPLATE.format(
         title=html.escape(f"Relevé des appels entrants — {client_label}"),
@@ -317,4 +351,6 @@ def render_report(data: ReportData) -> str:
         moyenne_hors_samedi=f"{data.moyenne_hors_samedi:.1f}".replace(".", ","),
         day_grid_table=_build_day_grid_table(data),
         recap_table=_build_recap_table(data),
+        traitement_table=_build_traitement_table(data),
+        subdivision_section=subdivision_section,
     )
