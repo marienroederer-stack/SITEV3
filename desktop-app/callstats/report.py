@@ -287,7 +287,24 @@ TEMPLATE = """<!doctype html>
     .actions {{ display: none; }}
     body {{ padding: 0; }}
     @page {{ size: A4 landscape; margin: 10mm; }}
-    table.day-grid-table th, table.day-grid-table td {{ font-size: 0.6rem; padding: 2px 3px; }}
+
+    /* Le défilement horizontal et les en-têtes/colonnes "collants" ne servent qu'à l'écran :
+       à l'impression ils provoquent des en-têtes dupliqués et des tableaux tronqués. On les
+       désactive et on force chaque tableau à tenir exactement dans la largeur de la page. */
+    .table-scroll {{ overflow: visible; border: none; }}
+    .table-scroll table {{ table-layout: fixed; width: 100%; min-width: 0; }}
+    th.sticky-col, td.total-col, th.total-col, th.sticky-row, th.corner {{ position: static; }}
+
+    table.day-grid-table th, table.day-grid-table td {{
+      font-size: 6.5pt; padding: 1px 2px; min-width: 0; overflow: hidden;
+    }}
+    /* table-layout: fixed tire les largeurs de colonnes de la 1ère ligne (l'en-tête) : on
+       cible donc aussi th.corner (en-tête "Créneau"), pas seulement td/th.slot-label. */
+    table.day-grid-table th.slot-label, table.day-grid-table th.corner {{
+      width: 54px; white-space: normal; line-height: 1.15;
+    }}
+    table.day-grid-table td.total-col, table.day-grid-table th.total-col {{ width: 30px; }}
+    table.recap-table th, table.recap-table td {{ font-size: 8pt; padding: 3px 2px; }}
   }}
 </style>
 </head>
