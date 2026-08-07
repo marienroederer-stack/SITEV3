@@ -11,6 +11,7 @@ from PySide6.QtGui import QIcon, QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QCompleter,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -53,6 +54,11 @@ class ClientsSettingsTab(QWidget):
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Rechercher un client (nom, quelques caractères suffisent)…")
+        self.search_edit.textChanged.connect(self._filter_table)
+        layout.addWidget(self.search_edit)
+
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
             ["Nom (fichier import)", "Nom affiché", "Numéro appelé", "Identifiant (slug)", "Jour de cycle"]
@@ -83,6 +89,14 @@ class ClientsSettingsTab(QWidget):
             spin.setRange(1, 31)
             spin.setValue(c.cycle_start_day)
             self.table.setCellWidget(row, 4, spin)
+        self._filter_table(self.search_edit.text())
+
+    def _filter_table(self, text: str):
+        needle = text.strip().lower()
+        for row in range(self.table.rowCount()):
+            nom = self.table.item(row, 0).text().lower()
+            display = self.table.item(row, 1).text().lower()
+            self.table.setRowHidden(row, bool(needle) and needle not in nom and needle not in display)
 
     def _save(self):
         for row in range(self.table.rowCount()):
@@ -322,6 +336,13 @@ class MainWindow(QMainWindow):
 
         toolbar.addWidget(QLabel("Client :"))
         self.client_combo = QComboBox()
+        self.client_combo.setEditable(True)
+        self.client_combo.setInsertPolicy(QComboBox.NoInsert)
+        # Tapez quelques lettres (ex : "BERT") pour filtrer la liste, où qu'elles apparaissent dans le nom.
+        combo_completer = self.client_combo.completer()
+        combo_completer.setCompletionMode(QCompleter.PopupCompletion)
+        combo_completer.setFilterMode(Qt.MatchContains)
+        combo_completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.client_combo.currentIndexChanged.connect(self.on_client_changed)
         toolbar.addWidget(self.client_combo, 1)
 
