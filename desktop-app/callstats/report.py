@@ -315,7 +315,7 @@ TEMPLATE = """<!doctype html>
 
   <h2>Traitement des appels</h2>
   {traitement_table}
-  <p class="note">Comptage des tags contenant chaque terme (pointage manuel), majoré de 5&nbsp;% de marge d'erreur et arrondi à l'inférieur. Pourcentage sur le total d'appels du mois.</p>
+  <p class="note">Pourcentage sur le total d'appels du mois.</p>
   {subdivision_section}
 </body>
 </html>
@@ -332,9 +332,7 @@ def render_report(data: ReportData) -> str:
         subdivision_section = (
             f"<h2>Répartition par médecin — {html.escape(names)}</h2>"
             f"{_build_subdivision_table(data)}"
-            '<p class="note">Le 1er médecin du groupe absorbe l\'écart d\'arrondi : la somme des '
-            "3 comptages correspond exactement au total RDV ci-dessus, et la somme des "
-            "pourcentages fait exactement 100&nbsp;%.</p>"
+            '<p class="note">Calcul arrondi au dixième, le total des 3 faisant 100&nbsp;%.</p>"
         )
     else:
         subdivision_section = ""
