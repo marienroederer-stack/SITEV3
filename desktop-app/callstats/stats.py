@@ -1,6 +1,7 @@
 """Calcul des périodes de cycle client et agrégation des statistiques d'appel."""
 
 import calendar
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from sqlite3 import Connection
@@ -24,6 +25,32 @@ TRANCHES = [
 # Seuils de durée de communication mis en avant dans le rapport (fixes, comme l'export actuel).
 SEUIL_1_SECONDES = 3 * 60
 SEUIL_2_SECONDES = 6 * 60
+
+# Catégories de tags recherchées (sous-chaîne, insensible à la casse) pour le tableau
+# "Traitement des appels" : libellé affiché -> terme recherché dans la colonne Tag.
+TAG_CATEGORIES = [
+    ("Attribution/report de RDV", "RDV"),
+    ("Annulation de RDV", "ANNUL"),
+    ("Envoi de message", "MESS"),
+]
+
+# Marge d'erreur appliquée aux comptages de tags (pointage manuel) : +5 %, arrondi à l'inférieur.
+MARGE_ERREUR_TAG = 0.05
+
+# Clients avec une ligne partagée entre plusieurs médecins, distingués par leur nom dans le tag
+# (ex: "RDV BUDILLON"). Le premier nom de chaque groupe absorbe l'écart d'arrondi lors de la
+# réconciliation avec le total RDV du client. Détection automatique : un client n'affiche la
+# subdivision que si des tags contenant ces noms sont présents dans son historique.
+SUBDIVISION_GROUPS = [
+    ["MAITRE", "RAMBAUD", "BRETONNET"],
+    ["BENAS", "BAGOT", "CHABAUD"],
+    ["BUDILLON", "RIDAO", "DEMURE"],
+]
+
+
+def _adjust(count: int) -> int:
+    """Applique la marge d'erreur de +5 % et arrondit à l'inférieur."""
+    return math.floor(count * (1 + MARGE_ERREUR_TAG))
 
 
 def add_months(d: date, months: int) -> date:
@@ -63,6 +90,20 @@ class GridCell:
 
 
 @dataclass
+class TagCategoryStat:
+    label: str
+    count: int  # comptage ajusté (+5 %, arrondi à l'inférieur)
+    pct: float  # pourcentage sur le total d'appels du mois (1 décimale)
+
+
+@dataclass
+class SubdivisionStat:
+    names: list  # les 3 noms du groupe, dans l'ordre (le 1er absorbe l'écart d'arrondi)
+    counts: list  # comptages ajustés, dont la somme == count RDV du client
+    pcts: list  # pourcentages sur le total RDV du client, dont la somme == 100.0
+
+
+@dataclass
 class ReportData:
     client: Optional[db.Client]
     period_start: date
@@ -79,6 +120,8 @@ class ReportData:
     count_over_seuil2: int
     total_calls: int
     total_seconds: int
+    traitement: list  # [TagCategoryStat, ...] dans l'ordre de TAG_CATEGORIES
+    subdivision: Optional[SubdivisionStat]
 
 
 def build_report_data(
@@ -104,6 +147,8 @@ def build_report_data(
     total_seconds = 0
     count_over_seuil1 = 0
     count_over_seuil2 = 0
+    tag_raw_counts = {label: 0 for label, _ in TAG_CATEGORIES}
+    subdivision_raw_counts: dict = {}  # nom -> comptage brut
 
     for row in rows:
         dt = datetime.fromisoformat(row["date_heure"])
@@ -120,6 +165,16 @@ def build_report_data(
             count_over_seuil1 += 1
         if seconds > SEUIL_2_SECONDES:
             count_over_seuil2 += 1
+
+        tag_value = (row["tag"] or "").upper()
+        if tag_value:
+            for label, terme in TAG_CATEGORIES:
+                if terme in tag_value:
+                    tag_raw_counts[label] += 1
+            for groupe in SUBDIVISION_GROUPS:
+                for nom in groupe:
+                    if nom in tag_value:
+                        subdivision_raw_counts[nom] = subdivision_raw_counts.get(nom, 0) + 1
 
         day_cell = day_totals.setdefault(call_date, GridCell())
         day_cell.count += 1
@@ -159,6 +214,30 @@ def build_report_data(
     total_calls_lunven = sum(weekday_totals.get(w, GridCell()).count for w in range(5))
     moyenne_hors_samedi = total_calls_lunven / total_days_lunven if total_days_lunven else 0.0
 
+    traitement = []
+    for label, _ in TAG_CATEGORIES:
+        count = _adjust(tag_raw_counts[label])
+        pct = round(count / total_calls * 100, 1) if total_calls else 0.0
+        traitement.append(TagCategoryStat(label=label, count=count, pct=pct))
+    total_rdv = traitement[0].count  # "Attribution/report de RDV" est toujours la 1ère catégorie
+
+    subdivision = None
+    if numero_appele is not None:
+        for groupe in SUBDIVISION_GROUPS:
+            if sum(subdivision_raw_counts.get(nom, 0) for nom in groupe) == 0:
+                continue
+            counts = [_adjust(subdivision_raw_counts.get(nom, 0)) for nom in groupe]
+            # Le 1er nom du groupe absorbe l'écart d'arrondi pour que la somme == total RDV.
+            counts[0] = total_rdv - counts[1] - counts[2]
+            if total_rdv:
+                pct2 = round(counts[1] / total_rdv * 100, 1)
+                pct3 = round(counts[2] / total_rdv * 100, 1)
+                pct1 = round(100.0 - pct2 - pct3, 1)
+            else:
+                pct1 = pct2 = pct3 = 0.0
+            subdivision = SubdivisionStat(names=list(groupe), counts=counts, pcts=[pct1, pct2, pct3])
+            break
+
     return ReportData(
         client=client,
         period_start=period_start,
@@ -175,4 +254,6 @@ def build_report_data(
         count_over_seuil2=count_over_seuil2,
         total_calls=total_calls,
         total_seconds=total_seconds,
+        traitement=traitement,
+        subdivision=subdivision,
     )
