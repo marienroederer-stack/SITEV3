@@ -426,7 +426,7 @@ class MainWindow(QMainWindow):
                 f"Lignes lues : {result.total_rows}\n"
                 f"Appels ajoutés : {result.inserted}\n"
                 f"Déjà présents (ignorés) : {result.duplicates}\n"
-                f"Exclus (sortant/manqué/<10s) : {result.filtered_out}\n"
+                f"Exclus (sortant/manqué/<8s) : {result.filtered_out}\n"
                 f"Nouveaux clients détectés : {len(result.new_clients)}"
             ),
         )
@@ -459,15 +459,59 @@ class MainWindow(QMainWindow):
         if not path_str:
             return
 
+        state = {"handled": False}
+
         def done(data: bytes):
-            if data:
-                Path(path_str).write_bytes(data)
-                QMessageBox.information(self, APP_TITLE, "PDF exporté avec succès.")
-            else:
-                QMessageBox.critical(self, APP_TITLE, "Échec de l'export PDF.")
+            if state["handled"]:
+                return  # le délai de sécurité a déjà réagi (réponse arrivée trop tard)
+            state["handled"] = True
+            try:
+                if data:
+                    Path(path_str).write_bytes(data)
+                    QMessageBox.information(self, APP_TITLE, "PDF exporté avec succès.")
+                else:
+                    from . import config
+
+                    config.log_error("export_pdf", f"printToPdf a renvoyé des données vides ({path_str}).")
+                    QMessageBox.critical(
+                        self,
+                        APP_TITLE,
+                        "Échec de l'export PDF (données vides).\n\n"
+                        "Vous pouvez utiliser «Exporter HTML» puis imprimer depuis le "
+                        "fichier ouvert dans un navigateur, qui fonctionne dans tous les cas.",
+                    )
+            except OSError as exc:
+                from . import config
+
+                config.log_error("export_pdf", f"Écriture impossible vers {path_str} :\n{exc}")
+                QMessageBox.critical(self, APP_TITLE, f"Échec de l'écriture du fichier PDF :\n{exc}")
+
+        def on_timeout():
+            if state["handled"]:
+                return
+            state["handled"] = True
+            from . import config
+
+            config.log_error("export_pdf", f"printToPdf n'a pas répondu dans le délai imparti ({path_str}).")
+            QMessageBox.critical(
+                self,
+                APP_TITLE,
+                "L'export PDF n'a pas abouti (délai dépassé).\n\n"
+                "Vous pouvez utiliser «Exporter HTML» puis imprimer depuis le fichier "
+                "ouvert dans un navigateur, qui fonctionne dans tous les cas.",
+            )
 
         layout = QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Landscape, QMarginsF(10, 10, 10, 10))
-        self.web_view.page().printToPdf(done, layout)
+        try:
+            self.web_view.page().printToPdf(done, layout)
+        except Exception as exc:
+            from . import config
+
+            config.log_error("export_pdf", f"Exception synchrone lors de l'appel à printToPdf :\n{traceback.format_exc()}")
+            QMessageBox.critical(self, APP_TITLE, f"Échec de l'export PDF :\n{exc}")
+            return
+
+        QTimer.singleShot(20000, on_timeout)
 
     def on_export_html(self):
         if self.current_data is None:
