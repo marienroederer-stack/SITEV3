@@ -51,7 +51,7 @@ COLUMN_CANDIDATES = {
 }
 
 # Mentions déclenchant un aboutement, selon que la ligne est un appel entrant ou sortant.
-MARQUEURS_ABOUTEMENT_ENTRANT = ("transfert accompagné vers", "transféré à")
+MARQUEURS_ABOUTEMENT_ENTRANT = ("transfert accompagné vers", "transféré à", "transféré au")
 MARQUEURS_ABOUTEMENT_SORTANT = ("transféré au", "accompagné", "transféré à")
 
 # Capture la cible qui suit la mention (ex: "Transféré au: 2215, par: ..." -> "2215").
@@ -65,6 +65,10 @@ _MOBILE_RE = re.compile(r"^0[67]\d{8}$")
 # Numéro (sans nom résolu) : sert à savoir si on doit se rabattre sur la colonne Nom pour le nom du client.
 _NUMERO_BRUT_RE = re.compile(r"^0\d{8,9}$")
 
+# Numéro de téléphone complet (fixe ou portable) : sert à distinguer un vrai numéro externe d'un
+# poste interne à 4 chiffres ou d'un identifiant textuel.
+_NUMERO_EXTERNE_RE = re.compile(r"^0\d{9}$")
+
 
 def classify_fixe_portable(value: Optional[str]) -> str:
     """« fixe » ou « portable » selon la racine d'un numéro ; tout ce qui n'est pas un numéro de
@@ -77,15 +81,26 @@ def classify_fixe_portable(value: Optional[str]) -> str:
 
 
 def detect_aboutement(description: Optional[str], type_val: str) -> tuple[bool, Optional[str]]:
-    """Détecte une mention d'aboutement dans la Description et sa cible éventuelle."""
+    """Détecte une mention d'aboutement dans la Description et sa cible éventuelle.
+
+    Côté entrant, « Transféré au: <poste> » sert aussi bien à renvoyer l'appel vers un
+    interlocuteur externe (un vrai aboutement) qu'à le faire circuler en interne entre
+    secrétaires (poste à 4 chiffres, groupe de recherche...). Seul le premier cas est un
+    aboutement : on ne le compte donc que lorsque la cible est un numéro de téléphone complet.
+    """
     if not description:
         return False, None
     lower = description.lower()
     marqueurs = MARQUEURS_ABOUTEMENT_ENTRANT if type_val == "entrant" else MARQUEURS_ABOUTEMENT_SORTANT
-    if not any(m in lower for m in marqueurs):
+    matched = next((m for m in marqueurs if m in lower), None)
+    if matched is None:
         return False, None
     match = _CIBLE_RE.search(description)
     cible = match.group(1).strip() if match else None
+    if type_val == "entrant" and matched == "transféré au":
+        cleaned = (cible or "").replace(" ", "")
+        if not _NUMERO_EXTERNE_RE.match(cleaned):
+            return False, None
     return True, cible
 
 
