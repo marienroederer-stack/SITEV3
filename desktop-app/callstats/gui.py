@@ -10,9 +10,11 @@ from PySide6.QtCore import QMarginsF, Qt, QTimer
 from PySide6.QtGui import QIcon, QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QCompleter,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -31,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from . import db, ftp_publish, importer, report, stats
+from . import db, ftp_publish, importer, importer_sortants, report, report_sortants, stats, stats_sortants
 from .config import resource_path
 from .db import Client
 
@@ -108,6 +110,153 @@ class ClientsSettingsTab(QWidget):
         self.conn.commit()
         self.on_saved()
         QMessageBox.information(self, APP_TITLE, "Réglages clients enregistrés.")
+
+
+class TarifsSettingsTab(QWidget):
+    """Tarifs des appels sortants/aboutements : un tarif global par défaut, personnalisable par client."""
+
+    def __init__(self, conn):
+        super().__init__()
+        self.conn = conn
+
+        layout = QVBoxLayout(self)
+
+        global_box = QFormLayout()
+        self.global_aboutement_fixe = QDoubleSpinBox()
+        self.global_aboutement_portable = QDoubleSpinBox()
+        self.global_sortant_fixe = QDoubleSpinBox()
+        self.global_sortant_portable = QDoubleSpinBox()
+        for spin in (
+            self.global_aboutement_fixe, self.global_aboutement_portable,
+            self.global_sortant_fixe, self.global_sortant_portable,
+        ):
+            spin.setRange(0, 99)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.01)
+            spin.setSuffix(" € HT")
+        global_box.addRow("Aboutement vers fixe", self.global_aboutement_fixe)
+        global_box.addRow("Aboutement vers portable", self.global_aboutement_portable)
+        global_box.addRow("Sortant vers fixe", self.global_sortant_fixe)
+        global_box.addRow("Sortant vers portable", self.global_sortant_portable)
+        layout.addLayout(global_box)
+
+        save_global_btn = QPushButton("Enregistrer les tarifs globaux (par défaut)")
+        save_global_btn.clicked.connect(self._save_global)
+        layout.addWidget(save_global_btn)
+
+        info_label = QLabel(
+            "Un client sans tarif dédié utilise les tarifs globaux ci-dessus. Cochez « Tarif dédié » "
+            "sur une ligne pour lui appliquer des tarifs personnalisés (ex : BERTRAND)."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Rechercher un client…")
+        self.search_edit.textChanged.connect(self._filter_table)
+        layout.addWidget(self.search_edit)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Client", "Tarif dédié", "Abt. fixe", "Abt. portable", "Sortant fixe", "Sortant portable"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        layout.addWidget(self.table)
+
+        save_btn = QPushButton("Enregistrer les tarifs par client")
+        save_btn.clicked.connect(self._save_clients)
+        layout.addWidget(save_btn)
+
+        self._reload()
+
+    def _make_tarif_spin(self, value: float, enabled: bool) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0, 99)
+        spin.setDecimals(2)
+        spin.setSingleStep(0.01)
+        spin.setValue(value)
+        spin.setEnabled(enabled)
+        return spin
+
+    def _reload(self):
+        globaux = db.get_global_tarifs(self.conn)
+        self.global_aboutement_fixe.setValue(globaux["aboutement_fixe"])
+        self.global_aboutement_portable.setValue(globaux["aboutement_portable"])
+        self.global_sortant_fixe.setValue(globaux["sortant_fixe"])
+        self.global_sortant_portable.setValue(globaux["sortant_portable"])
+
+        clients = db.list_clients(self.conn)
+        self.table.setRowCount(len(clients))
+        for row, c in enumerate(clients):
+            nom_item = QTableWidgetItem(c.label)
+            nom_item.setFlags(nom_item.flags() & ~Qt.ItemIsEditable)
+            nom_item.setData(Qt.UserRole, c.numero_appele)
+            self.table.setItem(row, 0, nom_item)
+
+            override = db.get_client_tarifs_override(self.conn, c.numero_appele)
+            dedie = any(v is not None for v in override.values())
+
+            checkbox = QCheckBox()
+            checkbox.setChecked(dedie)
+            self.table.setCellWidget(row, 1, checkbox)
+
+            spins = {
+                "aboutement_fixe": self._make_tarif_spin(
+                    override["aboutement_fixe"] if dedie else globaux["aboutement_fixe"], dedie
+                ),
+                "aboutement_portable": self._make_tarif_spin(
+                    override["aboutement_portable"] if dedie else globaux["aboutement_portable"], dedie
+                ),
+                "sortant_fixe": self._make_tarif_spin(
+                    override["sortant_fixe"] if dedie else globaux["sortant_fixe"], dedie
+                ),
+                "sortant_portable": self._make_tarif_spin(
+                    override["sortant_portable"] if dedie else globaux["sortant_portable"], dedie
+                ),
+            }
+            self.table.setCellWidget(row, 2, spins["aboutement_fixe"])
+            self.table.setCellWidget(row, 3, spins["aboutement_portable"])
+            self.table.setCellWidget(row, 4, spins["sortant_fixe"])
+            self.table.setCellWidget(row, 5, spins["sortant_portable"])
+
+            def on_toggled(checked, row=row, spins=spins):
+                for spin in spins.values():
+                    spin.setEnabled(checked)
+
+            checkbox.toggled.connect(on_toggled)
+
+        self._filter_table(self.search_edit.text())
+
+    def _filter_table(self, text: str):
+        needle = text.strip().lower()
+        for row in range(self.table.rowCount()):
+            nom = self.table.item(row, 0).text().lower()
+            self.table.setRowHidden(row, bool(needle) and needle not in nom)
+
+    def _save_global(self):
+        db.set_global_tarifs(
+            self.conn,
+            self.global_aboutement_fixe.value(),
+            self.global_aboutement_portable.value(),
+            self.global_sortant_fixe.value(),
+            self.global_sortant_portable.value(),
+        )
+        self.conn.commit()
+        self._reload()
+        QMessageBox.information(self, APP_TITLE, "Tarifs globaux enregistrés.")
+
+    def _save_clients(self):
+        for row in range(self.table.rowCount()):
+            numero = self.table.item(row, 0).data(Qt.UserRole)
+            checkbox: QCheckBox = self.table.cellWidget(row, 1)
+            if checkbox.isChecked():
+                spins = [self.table.cellWidget(row, c) for c in (2, 3, 4, 5)]
+                db.set_client_tarifs_override(self.conn, numero, *(s.value() for s in spins))
+            else:
+                db.set_client_tarifs_override(self.conn, numero, None, None, None, None)
+        self.conn.commit()
+        self._reload()
+        QMessageBox.information(self, APP_TITLE, "Tarifs par client enregistrés.")
 
 
 class PublishSettingsTab(QWidget):
@@ -303,9 +452,11 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         self.clients_tab = ClientsSettingsTab(conn, on_clients_saved)
+        self.tarifs_tab = TarifsSettingsTab(conn)
         self.publish_tab = PublishSettingsTab(conn)
         self.archive_tab = ArchiveSettingsTab(conn, on_clients_saved)
         tabs.addTab(self.clients_tab, "Clients")
+        tabs.addTab(self.tarifs_tab, "Tarifs")
         tabs.addTab(self.publish_tab, "Publication")
         tabs.addTab(self.archive_tab, "Archivage")
         layout.addWidget(tabs)
@@ -324,6 +475,9 @@ class MainWindow(QMainWindow):
         self.conn = db.connect()
         self.period_offset = 0
         self.current_data: Optional[stats.ReportData] = None
+        self.current_data_sortants: Optional[stats_sortants.SortantsReportData] = None
+        self._entrants_loaded = False
+        self._sortants_loaded = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -380,12 +534,42 @@ class MainWindow(QMainWindow):
 
         self.export_buttons = [pdf_btn, html_btn, publish_btn]
 
+        self.tabs = QTabWidget()
+        self.tabs.currentChanged.connect(lambda _i: self._update_export_buttons_enabled())
+        root.addWidget(self.tabs, 1)
+
         self.web_view = QWebEngineView()
-        self.web_view.loadFinished.connect(self._on_report_loaded)
+        self.web_view.loadFinished.connect(self._on_entrants_loaded)
         # Le bouton "Imprimer / Export PDF" du rapport appelle window.print(), qui ne fait rien
         # dans une QWebEngineView sans ce relais : on le fait pointer vers notre propre export PDF.
         self.web_view.page().printRequested.connect(self.on_export_pdf)
-        root.addWidget(self.web_view, 1)
+        self.tabs.addTab(self.web_view, "Appels entrants")
+
+        sortants_widget = QWidget()
+        sortants_layout = QVBoxLayout(sortants_widget)
+        sortants_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.web_view_sortants = QWebEngineView()
+        self.web_view_sortants.loadFinished.connect(self._on_sortants_loaded)
+        self.web_view_sortants.page().printRequested.connect(self.on_export_pdf)
+        sortants_layout.addWidget(self.web_view_sortants, 1)
+
+        sms_row = QHBoxLayout()
+        sms_row.addWidget(QLabel("SMS de rappel/annulation de RDV :"))
+        self.sms_rappel_spin = QSpinBox()
+        self.sms_rappel_spin.setRange(0, 99999)
+        sms_row.addWidget(self.sms_rappel_spin)
+        sms_row.addWidget(QLabel("SMS contact :"))
+        self.sms_contact_spin = QSpinBox()
+        self.sms_contact_spin.setRange(0, 99999)
+        sms_row.addWidget(self.sms_contact_spin)
+        self.sms_save_btn = QPushButton("Enregistrer les SMS de cette période")
+        self.sms_save_btn.clicked.connect(self.on_save_sms)
+        sms_row.addWidget(self.sms_save_btn)
+        sms_row.addStretch(1)
+        sortants_layout.addLayout(sms_row)
+
+        self.tabs.addTab(sortants_widget, "Appels sortants")
 
         self.reload_clients()
         self.refresh_report()
@@ -412,15 +596,56 @@ class MainWindow(QMainWindow):
         numero = self.client_combo.currentData()
         start, end = stats.get_period(self.current_cycle_start_day(), date.today(), self.period_offset)
         self.period_label.setText(f"{start.strftime('%d/%m/%Y')} – {end.strftime('%d/%m/%Y')}")
-        self.current_data = stats.build_report_data(self.conn, numero, start, end)
-        html_content = report.render_report(self.current_data)
+
+        self._entrants_loaded = False
+        self._sortants_loaded = False
         for btn in self.export_buttons:
             btn.setEnabled(False)
-        self.web_view.setHtml(html_content, baseUrl="about:blank")
 
-    def _on_report_loaded(self, ok: bool):
+        self.current_data = stats.build_report_data(self.conn, numero, start, end)
+        self.web_view.setHtml(report.render_report(self.current_data), baseUrl="about:blank")
+
+        self.current_data_sortants = stats_sortants.build_sortants_report_data(self.conn, numero, start, end)
+        self.web_view_sortants.setHtml(
+            report_sortants.render_report(self.current_data_sortants), baseUrl="about:blank"
+        )
+
+        self.sms_rappel_spin.blockSignals(True)
+        self.sms_contact_spin.blockSignals(True)
+        self.sms_rappel_spin.setValue(self.current_data_sortants.sms_rappel)
+        self.sms_contact_spin.setValue(self.current_data_sortants.sms_contact)
+        self.sms_rappel_spin.blockSignals(False)
+        self.sms_contact_spin.blockSignals(False)
+        sms_enabled = numero is not None
+        self.sms_rappel_spin.setEnabled(sms_enabled)
+        self.sms_contact_spin.setEnabled(sms_enabled)
+        self.sms_save_btn.setEnabled(sms_enabled)
+
+    def _on_entrants_loaded(self, ok: bool):
+        self._entrants_loaded = ok
+        self._update_export_buttons_enabled()
+
+    def _on_sortants_loaded(self, ok: bool):
+        self._sortants_loaded = ok
+        self._update_export_buttons_enabled()
+
+    def _update_export_buttons_enabled(self):
+        loaded = self._entrants_loaded if self.tabs.currentIndex() == 0 else self._sortants_loaded
         for btn in self.export_buttons:
-            btn.setEnabled(ok)
+            btn.setEnabled(loaded)
+
+    def _active_web_view(self) -> QWebEngineView:
+        return self.web_view if self.tabs.currentIndex() == 0 else self.web_view_sortants
+
+    def _active_html(self) -> Optional[str]:
+        if self.tabs.currentIndex() == 0:
+            return report.render_report(self.current_data) if self.current_data is not None else None
+        if self.current_data_sortants is None:
+            return None
+        return report_sortants.render_report(self.current_data_sortants)
+
+    def _active_filename_suffix(self) -> str:
+        return "" if self.tabs.currentIndex() == 0 else "-sortants"
 
     # -- Actions -------------------------------------------------------
 
@@ -437,6 +662,22 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_TITLE, f"Échec de l'import :\n{exc}")
             return
 
+        try:
+            result_sortants = importer_sortants.import_file(self.conn, Path(path_str))
+            sortants_summary = (
+                f"\n\nAppels sortants / aboutements :\n"
+                f"Lignes ajoutées : {result_sortants.inserted}\n"
+                f"Déjà présentes (ignorées) : {result_sortants.duplicates}"
+            )
+        except ValueError:
+            sortants_summary = (
+                "\n\n(Fichier non compatible avec le pointage des appels sortants — "
+                "colonnes manquantes (SDA, Description...) : cette partie a été ignorée.)"
+            )
+        except Exception:
+            traceback.print_exc()
+            sortants_summary = "\n\n(Échec de l'import des appels sortants — voir le journal d'erreurs.)"
+
         self.reload_clients()
         self.refresh_report()
         QMessageBox.information(
@@ -449,7 +690,8 @@ class MainWindow(QMainWindow):
                 f"Déjà présents (ignorés) : {result.duplicates}\n"
                 f"Exclus (sortant/manqué/<8s) : {result.filtered_out}\n"
                 f"Nouveaux clients détectés : {len(result.new_clients)}"
-            ),
+            )
+            + sortants_summary,
         )
 
     def on_client_changed(self):
@@ -467,20 +709,35 @@ class MainWindow(QMainWindow):
     def on_settings(self):
         dialog = SettingsDialog(self.conn, self.on_clients_saved, parent=self)
         dialog.exec()
+        # Les tarifs (par ex.) peuvent avoir changé sans passer par on_clients_saved : on
+        # rafraîchit systématiquement pour que le rapport sortants reflète l'état actuel.
+        self.refresh_report()
+
+    def on_save_sms(self):
+        numero = self.client_combo.currentData()
+        if numero is None:
+            return
+        start, _end = stats.get_period(self.current_cycle_start_day(), date.today(), self.period_offset)
+        db.set_sms_manuels(
+            self.conn, numero, start.isoformat(), self.sms_rappel_spin.value(), self.sms_contact_spin.value()
+        )
+        self.conn.commit()
+        self.refresh_report()
+        QMessageBox.information(self, APP_TITLE, "SMS enregistrés pour cette période.")
 
     def on_clients_saved(self):
         self.reload_clients()
         self.refresh_report()
 
     def on_export_pdf(self):
-        if self.current_data is None:
+        if self._active_html() is None:
             return
         default_name = self._default_filename() + ".pdf"
         path_str, _ = QFileDialog.getSaveFileName(self, "Exporter en PDF", default_name, "PDF (*.pdf)")
         if not path_str:
             return
 
-        page = self.web_view.page()
+        page = self._active_web_view().page()
         state = {"handled": False}
 
         def cleanup():
@@ -540,13 +797,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(20000, on_timeout)
 
     def on_export_html(self):
-        if self.current_data is None:
+        html_content = self._active_html()
+        if html_content is None:
             return
         default_name = self._default_filename() + ".html"
         path_str, _ = QFileDialog.getSaveFileName(self, "Exporter en HTML", default_name, "HTML (*.html)")
         if not path_str:
             return
-        Path(path_str).write_text(report.render_report(self.current_data), encoding="utf-8")
+        Path(path_str).write_text(html_content, encoding="utf-8")
         QMessageBox.information(self, APP_TITLE, "Fichier HTML exporté avec succès.")
 
     def on_publish(self):
@@ -556,7 +814,8 @@ class MainWindow(QMainWindow):
                 self, APP_TITLE, "Sélectionnez un client précis (pas « Tous les clients ») pour publier son rapport."
             )
             return
-        if self.current_data is None:
+        html_content = self._active_html()
+        if html_content is None:
             return
 
         tab = PublishSettingsTab(self.conn)  # simple porteur de config, non affiché
@@ -567,8 +826,9 @@ class MainWindow(QMainWindow):
             )
             return
 
+        slug = client.slug + self._active_filename_suffix()
         try:
-            url = ftp_publish.publish(config, client.slug, report.render_report(self.current_data))
+            url = ftp_publish.publish(config, slug, html_content)
         except Exception as exc:
             traceback.print_exc()
             QMessageBox.critical(self, APP_TITLE, f"Échec de la publication :\n{exc}")
@@ -580,7 +840,7 @@ class MainWindow(QMainWindow):
         client = self.current_client()
         base = client.slug if client else "tous-clients"
         start, end = stats.get_period(self.current_cycle_start_day(), date.today(), self.period_offset)
-        return f"rapport-{base}-{start.strftime('%Y-%m')}"
+        return f"rapport-{base}{self._active_filename_suffix()}-{start.strftime('%Y-%m')}"
 
 
 def main():
