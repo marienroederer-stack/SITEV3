@@ -121,8 +121,8 @@ def export_csv(conn: Connection, year_month: str, path: Path) -> int:
             )
 
     conn.execute(
-        "INSERT INTO archive_months (year_month, exported_at) VALUES (?, ?) "
-        "ON CONFLICT(year_month) DO UPDATE SET exported_at = excluded.exported_at",
+        "INSERT INTO archive_months (year_month, exported_at, purged_at) VALUES (?, ?, NULL) "
+        "ON CONFLICT(year_month) DO UPDATE SET exported_at = excluded.exported_at, purged_at = NULL",
         (year_month, datetime.now().isoformat()),
     )
     conn.commit()
@@ -170,8 +170,9 @@ def export_csv_sortants(conn: Connection, year_month: str, path: Path) -> int:
             )
 
     conn.execute(
-        "INSERT INTO archive_months (year_month, exported_at_sortants) VALUES (?, ?) "
-        "ON CONFLICT(year_month) DO UPDATE SET exported_at_sortants = excluded.exported_at_sortants",
+        "INSERT INTO archive_months (year_month, exported_at_sortants, purged_at_sortants) VALUES (?, ?, NULL) "
+        "ON CONFLICT(year_month) DO UPDATE SET exported_at_sortants = excluded.exported_at_sortants, "
+        "purged_at_sortants = NULL",
         (year_month, datetime.now().isoformat()),
     )
     conn.commit()
