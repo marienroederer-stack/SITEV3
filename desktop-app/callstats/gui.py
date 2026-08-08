@@ -355,23 +355,31 @@ class ArchiveSettingsTab(QWidget):
 
         layout = QVBoxLayout(self)
         info_label = QLabel(
-            "Exportez un mois civil en CSV pour vos archives. Une fois un ou plusieurs mois exportés, "
-            "le bouton en bas permet de supprimer d'un coup les appels de tous les mois déjà archivés "
-            "(utile si vous archivez plusieurs mois en retard)."
+            "Exportez un mois civil en CSV pour vos archives (entrants et sortants séparément). "
+            "Une fois un ou plusieurs mois exportés, le bouton en bas permet de supprimer d'un coup "
+            "les appels de tous les mois déjà archivés (utile si vous archivez plusieurs mois en retard)."
         )
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Mois", "Nb appels", "Statut"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Mois", "Nb entrants", "Statut entrants", "Nb sortants", "Statut sortants"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         layout.addWidget(self.table)
 
-        export_btn = QPushButton("Exporter le mois sélectionné en CSV…")
+        export_row = QHBoxLayout()
+        export_btn = QPushButton("Exporter les appels ENTRANTS du mois sélectionné…")
         export_btn.clicked.connect(self._export_selected)
-        layout.addWidget(export_btn)
+        export_row.addWidget(export_btn)
+
+        export_sortants_btn = QPushButton("Exporter les appels SORTANTS du mois sélectionné…")
+        export_sortants_btn.clicked.connect(self._export_selected_sortants)
+        export_row.addWidget(export_sortants_btn)
+        layout.addLayout(export_row)
 
         self.purge_btn = QPushButton("Supprimer les appels des mois déjà archivés")
         self.purge_btn.clicked.connect(self._purge)
@@ -395,11 +403,22 @@ class ArchiveSettingsTab(QWidget):
                 statut = "Non archivé"
             self.table.setItem(row, 2, QTableWidgetItem(statut))
 
+            self.table.setItem(row, 3, QTableWidgetItem(str(m.call_count_sortants)))
+            if m.purged_at_sortants:
+                statut_s = f"Purgé le {m.purged_at_sortants[:10]}"
+            elif m.exported_at_sortants:
+                statut_s = f"Archivé le {m.exported_at_sortants[:10]}"
+            else:
+                statut_s = "Non archivé"
+            self.table.setItem(row, 4, QTableWidgetItem(statut_s))
+
         purgeable = archive.list_purgeable(self.conn)
-        self.purge_btn.setEnabled(bool(purgeable))
+        purgeable_sortants = archive.list_purgeable_sortants(self.conn)
+        total_purgeable = len(set(purgeable) | set(purgeable_sortants))
+        self.purge_btn.setEnabled(bool(purgeable or purgeable_sortants))
         self.purge_btn.setText(
-            f"Supprimer les appels des {len(purgeable)} mois déjà archivés"
-            if purgeable
+            f"Supprimer les appels des {total_purgeable} mois déjà archivés"
+            if (purgeable or purgeable_sortants)
             else "Aucun mois archivé à supprimer"
         )
 
@@ -411,7 +430,7 @@ class ArchiveSettingsTab(QWidget):
             QMessageBox.warning(self, APP_TITLE, "Sélectionnez d'abord un mois dans la liste.")
             return
         month = self._months[row]
-        default_name = f"appels-{month.year_month}.csv"
+        default_name = f"appels-entrants-{month.year_month}.csv"
         path_str, _ = QFileDialog.getSaveFileName(self, "Exporter en CSV", default_name, "CSV (*.csv)")
         if not path_str:
             return
@@ -419,17 +438,35 @@ class ArchiveSettingsTab(QWidget):
         self._reload()
         QMessageBox.information(self, APP_TITLE, f"{count} appel(s) exporté(s) vers {path_str}.")
 
+    def _export_selected_sortants(self):
+        from . import archive
+
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, APP_TITLE, "Sélectionnez d'abord un mois dans la liste.")
+            return
+        month = self._months[row]
+        default_name = f"appels-sortants-{month.year_month}.csv"
+        path_str, _ = QFileDialog.getSaveFileName(self, "Exporter en CSV", default_name, "CSV (*.csv)")
+        if not path_str:
+            return
+        count = archive.export_csv_sortants(self.conn, month.year_month, Path(path_str))
+        self._reload()
+        QMessageBox.information(self, APP_TITLE, f"{count} appel(s) exporté(s) vers {path_str}.")
+
     def _purge(self):
         from . import archive
 
         purgeable = archive.list_purgeable(self.conn)
-        if not purgeable:
+        purgeable_sortants = archive.list_purgeable_sortants(self.conn)
+        if not purgeable and not purgeable_sortants:
             return
-        labels = ", ".join(archive.month_label(ym) for ym in purgeable)
+        labels = ", ".join(archive.month_label(ym) for ym in sorted(set(purgeable) | set(purgeable_sortants)))
         confirm = QMessageBox.warning(
             self,
             APP_TITLE,
-            f"Supprimer définitivement les appels de : {labels} ?\n\n"
+            f"Supprimer définitivement les appels (entrants et/ou sortants selon ce qui est archivé) de : "
+            f"{labels} ?\n\n"
             "Cette action est irréversible. Assurez-vous d'avoir bien exporté ces mois au préalable.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -437,10 +474,15 @@ class ArchiveSettingsTab(QWidget):
         if confirm != QMessageBox.Yes:
             return
         result = archive.purge_archived(self.conn)
+        result_sortants = archive.purge_archived_sortants(self.conn)
         self._reload()
         self.on_purged()
+        total_months = len(set(result.months) | set(result_sortants.months))
         QMessageBox.information(
-            self, APP_TITLE, f"{result.rows_deleted} appel(s) supprimé(s) pour {len(result.months)} mois."
+            self,
+            APP_TITLE,
+            f"{result.rows_deleted} appel(s) entrant(s) et {result_sortants.rows_deleted} appel(s) "
+            f"sortant(s)/aboutement(s) supprimé(s) pour {total_months} mois.",
         )
 
 
