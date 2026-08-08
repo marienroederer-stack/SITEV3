@@ -41,10 +41,10 @@ def _normalize(text: str) -> str:
     return text.strip().lower()
 
 
-def _build_header_index(headers: list) -> dict:
+def _build_header_index(headers: list, column_candidates: Optional[dict] = None) -> dict:
     normalized = {_normalize(h): i for i, h in enumerate(headers) if h is not None}
     index = {}
-    for field_name, candidates in COLUMN_CANDIDATES.items():
+    for field_name, candidates in (column_candidates or COLUMN_CANDIDATES).items():
         for candidate in candidates:
             if candidate in normalized:
                 index[field_name] = normalized[candidate]
