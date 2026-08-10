@@ -908,7 +908,7 @@ class MainWindow(QMainWindow):
         webapi_config = tab.get_webapi_config()
         if webapi_config is not None:
             is_entrants = self.tabs.currentIndex() == 0
-            start, _end = stats.get_period(self.current_cycle_start_day(), date.today(), self.period_offset)
+            start, end = stats.get_period(self.current_cycle_start_day(), date.today(), self.period_offset)
             nb_appels = self.current_data.total_calls if is_entrants and self.current_data else None
             try:
                 webapi_publish.notify(
@@ -919,6 +919,8 @@ class MainWindow(QMainWindow):
                     type_="entrants" if is_entrants else "sortants",
                     url=url,
                     nb_appels=nb_appels,
+                    periode_debut=start.isoformat(),
+                    periode_fin=end.isoformat(),
                 )
             except Exception as exc:
                 traceback.print_exc()

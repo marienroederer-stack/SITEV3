@@ -17,11 +17,25 @@ class WebApiConfig:
     api_key: str
 
 
-def notify(config: WebApiConfig, slug: str, annee: int, mois: int, type_: str, url: str, nb_appels: int | None = None) -> None:
+def notify(
+    config: WebApiConfig,
+    slug: str,
+    annee: int,
+    mois: int,
+    type_: str,
+    url: str,
+    nb_appels: int | None = None,
+    periode_debut: str | None = None,
+    periode_fin: str | None = None,
+) -> None:
     """Envoie la mise à jour à l'espace client. Lève une exception en cas d'échec."""
     payload = {"slug": slug, "annee": annee, "mois": mois, "type": type_, "url": url}
     if nb_appels is not None:
         payload["nb_appels"] = nb_appels
+    if periode_debut is not None:
+        payload["periode_debut"] = periode_debut
+    if periode_fin is not None:
+        payload["periode_fin"] = periode_fin
 
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
