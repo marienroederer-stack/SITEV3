@@ -55,9 +55,15 @@ lecture accidentelle du fichier de données, pas contre un accès complet à la
 machine — ne réutilisez pas ce mot de passe pour un autre usage sensible.
 
 Le dossier distant (ex : `/rapports`) doit correspondre à un emplacement
-accessible en écriture par le compte FTP/SFTP fourni. C'est vous qui liez
-ensuite manuellement chaque page publiée depuis l'espace client existant du
-site (l'application ne gère pas l'authentification des clients).
+accessible en écriture par le compte FTP/SFTP fourni.
+
+Si l'**URL API espace client** et la **clé API** sont également renseignées
+(fournies par l'espace client, voir `espace-client/README.md` sur le site),
+chaque publication met aussi à jour automatiquement le tableau de
+statistiques du client concerné (nombre d'appels et lien), sans ressaisie
+manuelle. Le slug du client dans callstats (Réglages > Clients) doit alors
+correspondre exactement au slug renseigné pour ce client dans
+l'administration de l'espace client.
 
 ## Installation / développement (Windows)
 
