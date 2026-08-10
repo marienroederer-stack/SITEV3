@@ -1,0 +1,23 @@
+<?php
+/**
+ * Copiez ce fichier en config.php (ignoré par git) et complétez les valeurs
+ * réelles. Ne jamais committer config.php.
+ */
+
+// Identifiants de la base MySQL créée sur l'hébergement OVH
+// (Espace client OVH > Hébergements > Bases de données).
+define('DB_HOST', 'xxxxxxxxxx.mysql.db'); // hôte fourni par OVH
+define('DB_NAME', 'xxxxxxxxxx');
+define('DB_USER', 'xxxxxxxxxx');
+define('DB_PASS', 'xxxxxxxxxx');
+
+// Mot de passe d'accès à l'administration (/admin/). Générez le hash avec :
+//   php -r 'echo password_hash("votre-mot-de-passe", PASSWORD_DEFAULT), PHP_EOL;'
+define('ADMIN_PASSWORD_HASH', '$2y$10$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+
+// Clé secrète partagée avec l'application de bureau callstats (Réglages > Publication).
+// Générez-en une avec : php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'
+define('API_KEY', 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+
+// URL publique de ce dossier espace-client, sans slash final (sert à construire les liens secrets).
+define('APP_URL', 'https://doctel.fr/espace-client');
