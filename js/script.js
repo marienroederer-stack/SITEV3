@@ -1,5 +1,10 @@
 document.getElementById('year').textContent = new Date().getFullYear();
 
+if (new URLSearchParams(window.location.search).get('envoye') === '1') {
+  const feedback = document.getElementById('contact-feedback');
+  if (feedback) feedback.hidden = false;
+}
+
 const navToggle = document.getElementById('nav-toggle');
 const mainNav = document.getElementById('main-nav');
 
