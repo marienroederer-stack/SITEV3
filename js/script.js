@@ -82,12 +82,18 @@ if (stage) {
     });
 
     dots.forEach((dot, i) => dot.classList.toggle('is-active', i === active));
+
+    stage.style.height = cards[active].offsetHeight + 'px';
   }
 
   function setActive(index) {
     active = ((index % count) + count) % count;
     render();
   }
+
+  window.addEventListener('resize', () => {
+    stage.style.height = cards[active].offsetHeight + 'px';
+  });
 
   prevBtn.addEventListener('click', () => setActive(active - 1));
   nextBtn.addEventListener('click', () => setActive(active + 1));
