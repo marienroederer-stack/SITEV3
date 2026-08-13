@@ -13,14 +13,18 @@ if ($nom === '' || $email === '' || $message === '' || !filter_var($email, FILTE
     exit;
 }
 
-$sujet = "Nouveau message depuis le site DOCTEL";
-$corps = "Nom : $nom\nEmail : $email\n\nMessage :\n$message";
-$entetes = "From: $destinataire\r\nReply-To: $email\r\n";
+$sujet = "CONTACT DEPUIS DOCTEL.FR";
+$corps = "Nom : $nom\r\nEmail : $email\r\n\r\nMessage :\r\n$message";
 
-$envoye = mail($destinataire, $sujet, $corps, $entetes);
+$entetes = "From: DOCTEL Site <$destinataire>\r\n";
+$entetes .= "Reply-To: $email\r\n";
+$entetes .= "Content-Type: text/plain; charset=UTF-8\r\n";
+$entetes .= "MIME-Version: 1.0\r\n";
+
+$envoye = mail($destinataire, $sujet, $corps, $entetes, "-f$destinataire");
 
 if ($envoye) {
-    header('Location: index.html?message=envoye#contact');
+    header('Location: index.html?envoye=1#contact');
 } else {
     http_response_code(500);
     echo "Une erreur est survenue lors de l'envoi. Merci de nous contacter par téléphone.";
