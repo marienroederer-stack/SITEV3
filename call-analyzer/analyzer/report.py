@@ -289,3 +289,81 @@ def render_report(data: ReportData, comparison: Optional[tuple] = None) -> str:
         tag_table=_build_tag_table(data.summary),
         comparison_section=comparison_section,
     )
+
+
+SYNTHESIS_TEMPLATE = """<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<style>
+  :root {{
+    --blue-dark: #002e99;
+    --text: #1a1a2e;
+    --text-muted: #5a5f73;
+    --border: #e7ecf5;
+    --bg-alt: #f5f8fd;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; padding: 32px; font-family: 'Montserrat', Arial, sans-serif; color: var(--text); background: #fff; }}
+  h1 {{ font-size: 1.4rem; color: var(--blue-dark); margin: 0 0 20px; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ border: 1px solid var(--border); text-align: center; padding: 8px 10px; font-size: 0.85rem; }}
+  th {{ background: var(--bg-alt); color: var(--blue-dark); font-weight: 600; }}
+  td:first-child, th:first-child {{ text-align: left; font-weight: 600; }}
+  tr:nth-child(even) td {{ background: var(--bg-alt); }}
+  .note {{ color: var(--text-muted); font-size: 0.8rem; margin-top: 12px; }}
+  .actions {{ margin: 0 0 24px; }}
+  .actions button {{
+    background: var(--blue-dark); color: #fff; border: none; border-radius: 8px;
+    padding: 10px 18px; font-size: 0.9rem; cursor: pointer;
+  }}
+  @media print {{
+    .actions {{ display: none; }}
+    body {{ padding: 0; }}
+    @page {{ size: A4 portrait; margin: 12mm; }}
+  }}
+</style>
+</head>
+<body>
+  <div class="actions"><button onclick="window.print()">Imprimer / Export PDF</button></div>
+  <h1>{title}</h1>
+  {table}
+  <p class="note">Un mois sans appel pour cette sélection apparaît avec des totaux à zéro plutôt que d'être omis.</p>
+</body>
+</html>
+"""
+
+
+def render_monthly_synthesis(label: str, rows: list) -> str:
+    """`rows` : liste de (ym:"YYYY-MM", Summary), triée par mois croissant."""
+    ratio_thresholds = sorted(rows[0][1].ratios) if rows else []
+    header_cells = (
+        "<th>Mois</th><th>Appels</th><th>Durée moy.<br>traitement</th>"
+        "<th>Attente<br>globale</th><th>Attente<br>sonnerie</th>"
+        + "".join(f"<th>&gt; {m} min</th>" for m in ratio_thresholds)
+        + "<th>Taux de<br>TAG</th>"
+    )
+
+    body_rows = []
+    for ym, summary in rows:
+        year, month = ym.split("-")
+        month_label = f"{_MOIS[int(month) - 1].capitalize()} {year}"
+        cells = (
+            f"<td>{html.escape(month_label)}</td>"
+            f"<td>{summary.total_calls}</td>"
+            f"<td>{_fmt_duration(summary.avg_comm_seconds)}</td>"
+            f"<td>{_fmt_duration(summary.avg_wait_global_seconds)}</td>"
+            f"<td>{_fmt_duration(summary.avg_wait_sonnerie_seconds)}</td>"
+            + "".join(f"<td>{_fmt_pct(summary.ratios[m])}</td>" for m in ratio_thresholds)
+            + f"<td>{_fmt_pct(summary.tag_rate_pct)}</td>"
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+
+    table_html = f"<table><thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+
+    return SYNTHESIS_TEMPLATE.format(
+        title=html.escape(f"Synthèse mensuelle — {label}"),
+        table=table_html,
+    )

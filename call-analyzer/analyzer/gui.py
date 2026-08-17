@@ -1,12 +1,13 @@
 """Interface graphique de l'application (PySide6)."""
 
+import re
 import sys
 import traceback
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QDate, QMarginsF, Qt, QTimer
+from PySide6.QtGui import QIcon, QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -52,6 +53,62 @@ def _period_label(period_type: str, start: date, end: date) -> str:
     if period_type == "semaine":
         return f"Semaine du {start.strftime('%d/%m/%Y')} au {end.strftime('%d/%m/%Y')}"
     return f"{MOIS_LABELS[start.month - 1].capitalize()} {start.year}"
+
+
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower() or "rapport"
+
+
+def export_web_view_to_pdf(parent: QWidget, web_view: QWebEngineView, default_name: str) -> None:
+    """Exporte le contenu HTML affiché dans `web_view` en PDF, avec confirmation de succès/
+    échec et un délai de sécurité au cas où le signal de fin n'arriverait jamais."""
+    path_str, _ = QFileDialog.getSaveFileName(parent, "Exporter en PDF", default_name, "PDF (*.pdf)")
+    if not path_str:
+        return
+
+    page = web_view.page()
+    state = {"handled": False}
+
+    def cleanup():
+        try:
+            page.pdfPrintingFinished.disconnect(on_finished)
+        except (RuntimeError, TypeError):
+            pass
+
+    def on_finished(file_path: str, success: bool):
+        if state["handled"] or file_path != path_str:
+            return  # le délai de sécurité a déjà réagi, ou signal pour un autre export
+        state["handled"] = True
+        cleanup()
+        if success:
+            QMessageBox.information(parent, APP_TITLE, "PDF exporté avec succès.")
+        else:
+            QMessageBox.critical(
+                parent, APP_TITLE,
+                "Échec de l'export PDF.\n\nVous pouvez réessayer, ou agrandir la fenêtre et "
+                "réessayer si le rapport est très large.",
+            )
+
+    def on_timeout():
+        if state["handled"]:
+            return
+        state["handled"] = True
+        cleanup()
+        QMessageBox.critical(
+            parent, APP_TITLE,
+            "L'export PDF n'a pas abouti (délai dépassé). Réessayez.",
+        )
+
+    layout = QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Landscape, QMarginsF(10, 10, 10, 10))
+    page.pdfPrintingFinished.connect(on_finished)
+    try:
+        page.printToPdf(path_str, layout)
+    except Exception as exc:
+        state["handled"] = True
+        cleanup()
+        QMessageBox.critical(parent, APP_TITLE, f"Échec de l'export PDF :\n{exc}")
+        return
+    QTimer.singleShot(20000, on_timeout)
 
 
 class SelectAllLineEdit(QLineEdit):
@@ -138,9 +195,22 @@ class AnalysisTab(QWidget):
         self.compare_combo.currentIndexChanged.connect(self.refresh)
         nav.addWidget(self.compare_combo)
 
+        nav.addStretch(1)
+
+        export_btn = QPushButton("Exporter PDF")
+        export_btn.clicked.connect(self.on_export_pdf)
+        nav.addWidget(export_btn)
+
+        synthesis_btn = QPushButton("Synthèse mensuelle…")
+        synthesis_btn.clicked.connect(self.on_monthly_synthesis)
+        nav.addWidget(synthesis_btn)
+
         layout.addLayout(nav)
 
         self.web_view = QWebEngineView()
+        # Le bouton "Imprimer / Export PDF" du rapport (window.print()) est relayé vers
+        # notre propre export PDF natif, qui fonctionne réellement dans une QWebEngineView.
+        self.web_view.page().printRequested.connect(self.on_export_pdf)
         layout.addWidget(self.web_view, 1)
 
         self.reload_values()
@@ -221,6 +291,57 @@ class AnalysisTab(QWidget):
 
         html = report.render_report(data, comparison=comparison)
         self.web_view.setHtml(html)
+
+    # -- Export --------------------------------------------------------
+
+    def _default_filename(self) -> str:
+        value_slug = _slugify(self.value_combo.currentText())
+        period_slug = _slugify(self.period_label.text())
+        return f"analyse-{self.dimension}-{value_slug}-{period_slug}"
+
+    def on_export_pdf(self):
+        export_web_view_to_pdf(self, self.web_view, self._default_filename() + ".pdf")
+
+    def on_monthly_synthesis(self):
+        value = self.value_combo.currentData()
+        label = self.value_combo.currentText()
+        dialog = SynthesisDialog(self.conn, self.dimension, value, label, self)
+        dialog.exec()
+
+
+class SynthesisDialog(QDialog):
+    """Synthèse mensuelle (une ligne de totaux par mois) pour la valeur sélectionnée dans
+    l'onglet d'analyse — vue "données synthétiques" complémentaire à la grille détaillée,
+    exportable en PDF."""
+
+    def __init__(self, conn, dimension: str, value, label: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Synthèse mensuelle — {label}")
+        self.resize(1000, 700)
+
+        layout = QVBoxLayout(self)
+
+        rows = stats.build_monthly_synthesis(conn, dimension, value)
+        html_content = report.render_monthly_synthesis(label, rows)
+
+        self.web_view = QWebEngineView()
+        self.web_view.setHtml(html_content)
+        self.web_view.page().printRequested.connect(self.on_export_pdf)
+        layout.addWidget(self.web_view, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        export_btn = QPushButton("Exporter PDF")
+        export_btn.clicked.connect(self.on_export_pdf)
+        btn_row.addWidget(export_btn)
+        close_btn = QPushButton("Fermer")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def on_export_pdf(self):
+        slug = _slugify(self.windowTitle())
+        export_web_view_to_pdf(self, self.web_view, slug + ".pdf")
 
 
 class DirectoryTableBase(QWidget):
@@ -384,6 +505,7 @@ class PurgeDialog(QDialog):
         super().__init__(parent)
         self.conn = conn
         self.setWindowTitle("Purger les données")
+        self.setMinimumWidth(480)
 
         layout = QVBoxLayout(self)
 
@@ -400,6 +522,7 @@ class PurgeDialog(QDialog):
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("dd/MM/yyyy")
+        self.date_edit.setMinimumWidth(120)
         self.date_edit.setDate(QDate.currentDate())
         self.date_edit.dateChanged.connect(self._update_count)
         form.addWidget(self.date_edit)

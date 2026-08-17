@@ -269,3 +269,16 @@ def build_summary_for_month(
     end_iso = datetime.combine(end, datetime.max.time()).isoformat()
     rows = db.calls_for_dimension(conn, dimension, value, start_iso, end_iso)
     return build_summary(rows)
+
+
+def build_monthly_synthesis(
+    conn: Connection, dimension: str, value: Optional[str]
+) -> list[tuple[str, Summary]]:
+    """Un résumé (Summary) par mois pour la dimension/valeur donnée, pour tous les mois où
+    au moins un appel existe dans la base (toutes dimensions confondues) — un mois sans
+    appel pour cette valeur précise apparaît avec des totaux à zéro plutôt que d'être
+    omis, pour que la synthèse couvre toute la période importée sans trou."""
+    return [
+        (ym, build_summary_for_month(conn, dimension, value, *(int(x) for x in ym.split("-"))))
+        for ym in db.months_with_calls(conn)
+    ]
