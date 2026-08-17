@@ -79,6 +79,7 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     _seed_if_empty(conn)
+    purge_excluded_operators(conn)
     return conn
 
 
@@ -196,6 +197,29 @@ def list_code_affaires(conn: sqlite3.Connection) -> list[str]:
 
 # -- Opérateurs -------------------------------------------------------------------
 
+# Préfixes de login exclus en permanence du répertoire opérateurs : ce sont des postes
+# clients raccordés au standard téléphonique (ex: "2205"), pas de vrais opérateurs
+# télésecrétaires. Les appels correspondants restent en base (comptés dans "Tous les
+# opérateurs"), seule la fiche répertoire n'est jamais créée/affichée.
+EXCLUDED_OPERATOR_LOGIN_PREFIXES = ("22",)
+
+
+def is_excluded_operator_login(login: str) -> bool:
+    return any(login.startswith(p) for p in EXCLUDED_OPERATOR_LOGIN_PREFIXES)
+
+
+def purge_excluded_operators(conn: sqlite3.Connection) -> int:
+    """Supprime du répertoire les opérateurs déjà enregistrés dont le login correspond à
+    un préfixe exclu. Idempotent, appelé à chaque connexion pour que l'exclusion reste
+    permanente même sur une base où ces fiches auraient été créées avant son ajout."""
+    rows = conn.execute("SELECT login FROM operators").fetchall()
+    to_delete = [r["login"] for r in rows if is_excluded_operator_login(r["login"])]
+    for login in to_delete:
+        conn.execute("DELETE FROM operators WHERE login = ?", (login,))
+    if to_delete:
+        conn.commit()
+    return len(to_delete)
+
 
 @dataclass
 class Operator:
@@ -215,7 +239,7 @@ def _operator_from_row(row: sqlite3.Row) -> Operator:
 
 def list_operators(conn: sqlite3.Connection) -> list[Operator]:
     rows = conn.execute("SELECT * FROM operators ORDER BY (nom = ''), nom COLLATE NOCASE, login").fetchall()
-    return [_operator_from_row(r) for r in rows]
+    return [_operator_from_row(r) for r in rows if not is_excluded_operator_login(r["login"])]
 
 
 def get_operator(conn: sqlite3.Connection, login: str) -> Optional[Operator]:
@@ -303,6 +327,22 @@ def months_with_calls(conn: sqlite3.Connection) -> list[str]:
     """Liste des mois (YYYY-MM) pour lesquels au moins un appel est enregistré, triés."""
     rows = conn.execute("SELECT DISTINCT substr(date_heure, 1, 7) AS ym FROM calls ORDER BY ym").fetchall()
     return [r["ym"] for r in rows]
+
+
+def count_calls_before(conn: sqlite3.Connection, cutoff_iso: str) -> int:
+    """Nombre d'appels dont la date est strictement antérieure à `cutoff_iso`."""
+    return conn.execute("SELECT COUNT(*) AS n FROM calls WHERE date_heure < ?", (cutoff_iso,)).fetchone()["n"]
+
+
+def purge_calls_before(conn: sqlite3.Connection, cutoff_iso: str) -> int:
+    """Supprime définitivement les appels antérieurs à `cutoff_iso`. Les fiches clients et
+    opérateurs ne sont pas touchées, et le journal des imports (imports) est conservé tel
+    quel comme trace historique. Comme le dédoublonnage se fait par Call Id, réimporter par
+    la suite un fichier couvrant la période purgée réinsère normalement les appels effacés
+    (ce ne sont plus des doublons)."""
+    cur = conn.execute("DELETE FROM calls WHERE date_heure < ?", (cutoff_iso,))
+    conn.commit()
+    return cur.rowcount
 
 
 def call_count_for_client(conn: sqlite3.Connection, sda: str) -> int:

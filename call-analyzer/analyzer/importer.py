@@ -13,6 +13,12 @@ Les nouveaux SDA et les nouveaux logins opérateur rencontrés dans un fichier s
 ajoutés automatiquement aux répertoires (Listing clients / Listing opérateurs). Si
 le nom ou le code affaire d'un SDA déjà connu change dans un nouvel import, la
 fiche est mise à jour mais l'historique des appels reste attaché au même SDA.
+
+Les logins opérateur commençant par un préfixe exclu (voir
+db.EXCLUDED_OPERATOR_LOGIN_PREFIXES — ex: "22...", des postes clients raccordés au
+standard et non de vrais opérateurs) ne sont jamais ajoutés au répertoire ; les
+appels correspondants restent en base mais n'apparaissent pas comme opérateur
+sélectionnable.
 """
 
 import csv
@@ -200,7 +206,7 @@ def import_file(conn: Connection, path: Path) -> ImportResult:
             result.new_clients.append(client)
 
         operateur = str(cell("identifiant_appele") or "").strip()
-        if operateur and operateur not in known_operators:
+        if operateur and operateur not in known_operators and not db.is_excluded_operator_login(operateur):
             _, op_created = db.get_or_create_operator(conn, operateur)
             if op_created:
                 known_operators.add(operateur)

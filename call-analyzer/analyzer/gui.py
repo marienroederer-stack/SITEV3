@@ -2,20 +2,23 @@
 
 import sys
 import traceback
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
     QCompleter,
+    QDateEdit,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -51,6 +54,36 @@ def _period_label(period_type: str, start: date, end: date) -> str:
     return f"{MOIS_LABELS[start.month - 1].capitalize()} {start.year}"
 
 
+class SelectAllLineEdit(QLineEdit):
+    """Champ de saisie d'un QComboBox éditable : un clic n'importe où sélectionne tout le
+    texte déjà présent (prêt à être remplacé en tapant, sans avoir à l'effacer à la main)
+    et ouvre la liste déroulante, comme un clic sur la flèche en bout de ligne."""
+
+    def __init__(self, combo: QComboBox):
+        super().__init__(combo)
+        self._combo = combo
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        self.selectAll()
+        self._combo.showPopup()
+
+
+class SearchableComboBox(QComboBox):
+    """QComboBox éditable avec recherche par saisie (filtre les éléments contenant le texte
+    tapé, où qu'il apparaisse, insensible à la casse) et sélection totale du texte au clic."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.setLineEdit(SelectAllLineEdit(self))
+        completer = self.completer()
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+
+
 class AnalysisTab(QWidget):
     """Un onglet d'analyse (par client, par opérateur ou par code affaire)."""
 
@@ -64,13 +97,7 @@ class AnalysisTab(QWidget):
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel(f"{dimension_title} :"))
-        self.value_combo = QComboBox()
-        self.value_combo.setEditable(True)
-        self.value_combo.setInsertPolicy(QComboBox.NoInsert)
-        completer = self.value_combo.completer()
-        completer.setCompletionMode(QCompleter.PopupCompletion)
-        completer.setFilterMode(Qt.MatchContains)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.value_combo = SearchableComboBox()
         self.value_combo.currentIndexChanged.connect(self.refresh)
         controls.addWidget(self.value_combo, 1)
 
@@ -349,6 +376,77 @@ class ImportsLogTab(QWidget):
                 self.table.setItem(row, col, item)
 
 
+class PurgeDialog(QDialog):
+    """Purge définitive des appels antérieurs à une date choisie, avec confirmation de
+    sécurité affichant le nombre exact d'appels concernés."""
+
+    def __init__(self, conn, parent=None):
+        super().__init__(parent)
+        self.conn = conn
+        self.setWindowTitle("Purger les données")
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "Supprime définitivement les appels enregistrés avant la date choisie.\n"
+            "Les fiches clients et opérateurs ne sont pas affectées, et réimporter plus "
+            "tard un fichier couvrant la période purgée fonctionne normalement."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        form = QHBoxLayout()
+        form.addWidget(QLabel("Purger les appels antérieurs au :"))
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat("dd/MM/yyyy")
+        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.dateChanged.connect(self._update_count)
+        form.addWidget(self.date_edit)
+        form.addStretch(1)
+        layout.addLayout(form)
+
+        self.count_label = QLabel()
+        self.count_label.setStyleSheet("font-weight: 600;")
+        layout.addWidget(self.count_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        self.purge_btn = QPushButton("Purger…")
+        self.purge_btn.clicked.connect(self._on_purge_clicked)
+        btn_row.addWidget(self.purge_btn)
+        layout.addLayout(btn_row)
+
+        self._update_count()
+
+    def _cutoff_iso(self) -> str:
+        d = self.date_edit.date().toPython()
+        return datetime.combine(d, datetime.min.time()).isoformat()
+
+    def _update_count(self):
+        n = db.count_calls_before(self.conn, self._cutoff_iso())
+        self.count_label.setText(f"{n} appel(s) seront supprimés définitivement.")
+        self.purge_btn.setEnabled(n > 0)
+
+    def _on_purge_clicked(self):
+        n = db.count_calls_before(self.conn, self._cutoff_iso())
+        date_str = self.date_edit.date().toString("dd/MM/yyyy")
+        reply = QMessageBox.question(
+            self,
+            "Confirmer la purge",
+            f"Confirmez-vous la suppression définitive de {n} appel(s) antérieur(s) au "
+            f"{date_str} ?\n\nCette action est irréversible.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            db.purge_calls_before(self.conn, self._cutoff_iso())
+            self.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -368,6 +466,9 @@ class MainWindow(QMainWindow):
         import_btn = QPushButton("Importer un fichier…")
         import_btn.clicked.connect(self.on_import)
         toolbar.addWidget(import_btn)
+        purge_btn = QPushButton("Purger les données…")
+        purge_btn.clicked.connect(self.on_purge)
+        toolbar.addWidget(purge_btn)
         self.import_status = QLabel("Aucun import effectué.")
         toolbar.addWidget(self.import_status, 1)
         root.addLayout(toolbar)
@@ -411,6 +512,16 @@ class MainWindow(QMainWindow):
             f"({last['rows_inserted']} appel(s) ajouté(s))"
         )
 
+    def _refresh_all_tabs(self):
+        for tab in (self.client_tab, self.operateur_tab, self.code_affaire_tab):
+            tab.reload_values()
+            tab.reload_compare_months()
+            tab.refresh()
+        self.clients_listing_tab.reload()
+        self.operators_listing_tab.reload()
+        self.imports_log_tab.reload()
+        self._refresh_last_import_label()
+
     def on_import(self):
         path_str, _ = QFileDialog.getOpenFileName(
             self, "Importer un listing d'appels", "", "Fichiers appels (*.xlsx *.xlsm *.csv)"
@@ -424,14 +535,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_TITLE, f"Échec de l'import :\n{exc}")
             return
 
-        for tab in (self.client_tab, self.operateur_tab, self.code_affaire_tab):
-            tab.reload_values()
-            tab.reload_compare_months()
-            tab.refresh()
-        self.clients_listing_tab.reload()
-        self.operators_listing_tab.reload()
-        self.imports_log_tab.reload()
-        self._refresh_last_import_label()
+        self._refresh_all_tabs()
 
         QMessageBox.information(
             self,
@@ -447,6 +551,12 @@ class MainWindow(QMainWindow):
                 f"Nouveaux opérateurs détectés : {len(result.new_operators)}"
             ),
         )
+
+    def on_purge(self):
+        dialog = PurgeDialog(self.conn, self)
+        if dialog.exec() == QDialog.Accepted:
+            self._refresh_all_tabs()
+            QMessageBox.information(self, APP_TITLE, "Purge terminée.")
 
 
 def main():
