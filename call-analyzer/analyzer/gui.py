@@ -36,6 +36,12 @@ from .config import icon_path as app_icon_path
 
 APP_TITLE = "CADUCEA - Analyse interne des appels"
 
+DIMENSION_ALL_LABELS = {
+    "client": "Tous les clients",
+    "operateur": "Tous les opérateurs",
+    "code_affaire": "Tous les codes affaire",
+}
+
 MOIS_LABELS = [
     "janvier", "février", "mars", "avril", "mai", "juin",
     "juillet", "août", "septembre", "octobre", "novembre", "décembre",
@@ -149,6 +155,7 @@ class AnalysisTab(QWidget):
         self.conn = conn
         self.dimension = dimension
         self.period_offset = 0
+        self._current_start = self._current_end = date.today()
 
         layout = QVBoxLayout(self)
 
@@ -163,7 +170,7 @@ class AnalysisTab(QWidget):
         self.period_type_combo.addItem("Jour", "jour")
         self.period_type_combo.addItem("Semaine", "semaine")
         self.period_type_combo.addItem("Mois", "mois")
-        self.period_type_combo.setCurrentIndex(1)  # Semaine par défaut
+        self.period_type_combo.setCurrentIndex(2)  # Mois par défaut
         self.period_type_combo.currentIndexChanged.connect(self._on_period_type_changed)
         controls.addWidget(self.period_type_combo)
 
@@ -205,6 +212,10 @@ class AnalysisTab(QWidget):
         synthesis_btn.clicked.connect(self.on_monthly_synthesis)
         nav.addWidget(synthesis_btn)
 
+        breakdown_btn = QPushButton(f"{DIMENSION_ALL_LABELS[dimension]} — cette période…")
+        breakdown_btn.clicked.connect(self.on_breakdown)
+        nav.addWidget(breakdown_btn)
+
         layout.addLayout(nav)
 
         self.web_view = QWebEngineView()
@@ -222,12 +233,7 @@ class AnalysisTab(QWidget):
         current = self.value_combo.currentData()
         self.value_combo.blockSignals(True)
         self.value_combo.clear()
-        all_label = {
-            "client": "Tous les clients",
-            "operateur": "Tous les opérateurs",
-            "code_affaire": "Tous les codes affaire",
-        }[self.dimension]
-        self.value_combo.addItem(all_label, None)
+        self.value_combo.addItem(DIMENSION_ALL_LABELS[self.dimension], None)
         if self.dimension == "client":
             for c in db.list_clients(self.conn):
                 self.value_combo.addItem(f"{c.label} ({c.sda})", c.sda)
@@ -279,6 +285,7 @@ class AnalysisTab(QWidget):
         granularity = self.granularity_combo.currentData() or 60
 
         start, end = stats.get_period(period_type, date.today(), self.period_offset)
+        self._current_start, self._current_end = start, end
         data = stats.build_report_data(self.conn, self.dimension, value, period_type, start, end, granularity)
         self.period_label.setText(_period_label(period_type, start, end))
 
@@ -308,6 +315,10 @@ class AnalysisTab(QWidget):
         dialog = SynthesisDialog(self.conn, self.dimension, value, label, self)
         dialog.exec()
 
+    def on_breakdown(self):
+        dialog = BreakdownDialog(self.conn, self.dimension, self._current_start, self._current_end, self)
+        dialog.exec()
+
 
 class SynthesisDialog(QDialog):
     """Synthèse mensuelle (une ligne de totaux par mois) pour la valeur sélectionnée dans
@@ -323,6 +334,48 @@ class SynthesisDialog(QDialog):
 
         rows = stats.build_monthly_synthesis(conn, dimension, value)
         html_content = report.render_monthly_synthesis(label, rows)
+
+        self.web_view = QWebEngineView()
+        self.web_view.setHtml(html_content)
+        self.web_view.page().printRequested.connect(self.on_export_pdf)
+        layout.addWidget(self.web_view, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        export_btn = QPushButton("Exporter PDF")
+        export_btn.clicked.connect(self.on_export_pdf)
+        btn_row.addWidget(export_btn)
+        close_btn = QPushButton("Fermer")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def on_export_pdf(self):
+        slug = _slugify(self.windowTitle())
+        export_web_view_to_pdf(self, self.web_view, slug + ".pdf")
+
+
+class BreakdownDialog(QDialog):
+    """Comparaison de toutes les valeurs d'une dimension (tous les clients, tous les
+    opérateurs ou tous les codes affaire) sur la période actuellement affichée dans
+    l'onglet d'analyse — pour voir tout le monde côte à côte plutôt qu'un(e) seul(e) client/
+    opérateur/code affaire à la fois."""
+
+    def __init__(self, conn, dimension: str, period_start, period_end, parent=None):
+        super().__init__(parent)
+        period_str = f"{period_start.strftime('%d/%m/%Y')} - {period_end.strftime('%d/%m/%Y')}"
+        self.setWindowTitle(f"{DIMENSION_ALL_LABELS[dimension]} — {period_str}")
+        self.resize(1100, 700)
+
+        layout = QVBoxLayout(self)
+
+        rows = stats.build_dimension_breakdown(conn, dimension, period_start, period_end)
+        total_summary = stats.build_summary(db.calls_for_dimension(
+            conn, dimension, None,
+            datetime.combine(period_start, datetime.min.time()).isoformat(),
+            datetime.combine(period_end, datetime.max.time()).isoformat(),
+        ))
+        html_content = report.render_dimension_breakdown(dimension, period_start, period_end, rows, total_summary)
 
         self.web_view = QWebEngineView()
         self.web_view.setHtml(html_content)

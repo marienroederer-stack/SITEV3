@@ -282,3 +282,35 @@ def build_monthly_synthesis(
         (ym, build_summary_for_month(conn, dimension, value, *(int(x) for x in ym.split("-"))))
         for ym in db.months_with_calls(conn)
     ]
+
+
+def _dimension_entries(conn: Connection, dimension: str) -> list[tuple[Optional[str], str]]:
+    if dimension == "client":
+        return [(c.sda, c.label) for c in db.list_clients(conn)]
+    if dimension == "operateur":
+        return [("", "Non attribué")] + [(o.login, o.label) for o in db.list_operators(conn)]
+    if dimension == "code_affaire":
+        return [(code, code) for code in db.list_code_affaires(conn)]
+    raise ValueError(f"Dimension inconnue : {dimension}")
+
+
+def build_dimension_breakdown(
+    conn: Connection, dimension: str, period_start: date, period_end: date
+) -> list[tuple[str, Summary]]:
+    """Un résumé (Summary) par valeur de la dimension (chaque client/opérateur/code
+    affaire), sur une période donnée — pour comparer toutes les valeurs entre elles sur la
+    même période plutôt qu'une seule à la fois. Triée par nombre d'appels décroissant ; les
+    valeurs sans aucun appel sur la période sont omises (elles seraient nombreuses et sans
+    intérêt pour une comparaison)."""
+    start_iso = datetime.combine(period_start, datetime.min.time()).isoformat()
+    end_iso = datetime.combine(period_end, datetime.max.time()).isoformat()
+
+    rows = []
+    for value, label in _dimension_entries(conn, dimension):
+        calls = db.calls_for_dimension(conn, dimension, value, start_iso, end_iso)
+        summary = build_summary(calls)
+        if summary.total_calls == 0:
+            continue
+        rows.append((label, summary))
+    rows.sort(key=lambda r: r[1].total_calls, reverse=True)
+    return rows

@@ -313,6 +313,7 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
   th {{ background: var(--bg-alt); color: var(--blue-dark); font-weight: 600; }}
   td:first-child, th:first-child {{ text-align: left; font-weight: 600; }}
   tr:nth-child(even) td {{ background: var(--bg-alt); }}
+  tr.total-row td {{ background: #e9f0ff; font-weight: 700; border-top: 2px solid var(--blue-dark); }}
   .note {{ color: var(--text-muted); font-size: 0.8rem; margin-top: 12px; }}
   .actions {{ margin: 0 0 24px; }}
   .actions button {{
@@ -330,28 +331,26 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
   <div class="actions"><button onclick="window.print()">Imprimer / Export PDF</button></div>
   <h1>{title}</h1>
   {table}
-  <p class="note">Un mois sans appel pour cette sélection apparaît avec des totaux à zéro plutôt que d'être omis.</p>
+  <p class="note">{note}</p>
 </body>
 </html>
 """
 
 
-def render_monthly_synthesis(label: str, rows: list) -> str:
-    """`rows` : liste de (ym:"YYYY-MM", Summary), triée par mois croissant."""
-    ratio_thresholds = sorted(rows[0][1].ratios) if rows else []
+def _build_summary_table(first_header: str, rows: list, total_row: Optional[tuple] = None) -> str:
+    """`rows` et `total_row` (optionnel) : (label, Summary). `total_row`, si fourni, est
+    affiché en dernière ligne, mise en évidence."""
+    ratio_thresholds = sorted((rows[0] if rows else total_row)[1].ratios) if (rows or total_row) else []
     header_cells = (
-        "<th>Mois</th><th>Appels</th><th>Durée moy.<br>traitement</th>"
+        f"<th>{html.escape(first_header)}</th><th>Appels</th><th>Durée moy.<br>traitement</th>"
         "<th>Attente<br>globale</th><th>Attente<br>sonnerie</th>"
         + "".join(f"<th>&gt; {m} min</th>" for m in ratio_thresholds)
         + "<th>Taux de<br>TAG</th>"
     )
 
-    body_rows = []
-    for ym, summary in rows:
-        year, month = ym.split("-")
-        month_label = f"{_MOIS[int(month) - 1].capitalize()} {year}"
-        cells = (
-            f"<td>{html.escape(month_label)}</td>"
+    def _row_cells(label: str, summary: Summary) -> str:
+        return (
+            f"<td>{html.escape(label)}</td>"
             f"<td>{summary.total_calls}</td>"
             f"<td>{_fmt_duration(summary.avg_comm_seconds)}</td>"
             f"<td>{_fmt_duration(summary.avg_wait_global_seconds)}</td>"
@@ -359,11 +358,49 @@ def render_monthly_synthesis(label: str, rows: list) -> str:
             + "".join(f"<td>{_fmt_pct(summary.ratios[m])}</td>" for m in ratio_thresholds)
             + f"<td>{_fmt_pct(summary.tag_rate_pct)}</td>"
         )
-        body_rows.append(f"<tr>{cells}</tr>")
 
-    table_html = f"<table><thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+    body_rows = [f"<tr>{_row_cells(label, summary)}</tr>" for label, summary in rows]
+    if total_row:
+        body_rows.append(f'<tr class="total-row">{_row_cells(*total_row)}</tr>')
+
+    return f"<table><thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+
+
+def render_monthly_synthesis(label: str, rows: list) -> str:
+    """`rows` : liste de (ym:"YYYY-MM", Summary), triée par mois croissant."""
+    formatted_rows = []
+    for ym, summary in rows:
+        year, month = ym.split("-")
+        month_label = f"{_MOIS[int(month) - 1].capitalize()} {year}"
+        formatted_rows.append((month_label, summary))
 
     return SYNTHESIS_TEMPLATE.format(
         title=html.escape(f"Synthèse mensuelle — {label}"),
+        table=_build_summary_table("Mois", formatted_rows),
+        note="Un mois sans appel pour cette sélection apparaît avec des totaux à zéro plutôt que d'être omis.",
+    )
+
+
+DIMENSION_COLUMN_LABELS = {"client": "Client", "operateur": "Opérateur", "code_affaire": "Code affaire"}
+DIMENSION_PLURAL_LABELS = {
+    "client": "tous les clients",
+    "operateur": "tous les opérateurs",
+    "code_affaire": "tous les codes affaire",
+}
+
+
+def render_dimension_breakdown(
+    dimension: str, period_start: date, period_end: date, rows: list, total_summary: Summary
+) -> str:
+    """`rows` : liste de (label, Summary), une par valeur de la dimension ayant au moins un
+    appel sur la période ; `total_summary` : résumé "Tous" sur la même période, affiché en
+    ligne TOTAL."""
+    period_label = f"du {_fr_date(period_start)} au {_fr_date(period_end)}"
+    column_label = DIMENSION_COLUMN_LABELS.get(dimension, "Valeur")
+    table_html = _build_summary_table(column_label, rows, total_row=("TOTAL", total_summary))
+
+    return SYNTHESIS_TEMPLATE.format(
+        title=html.escape(f"Comparaison — {DIMENSION_PLURAL_LABELS.get(dimension, dimension)} — {period_label}"),
         table=table_html,
+        note="Triée par nombre d'appels décroissant. Seules les valeurs ayant au moins un appel sur la période sont affichées.",
     )
