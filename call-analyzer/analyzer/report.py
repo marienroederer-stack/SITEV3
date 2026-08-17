@@ -314,6 +314,10 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
   td:first-child, th:first-child {{ text-align: left; font-weight: 600; }}
   tr:nth-child(even) td {{ background: var(--bg-alt); }}
   tr.total-row td {{ background: #e9f0ff; font-weight: 700; border-top: 2px solid var(--blue-dark); }}
+  table.sortable th {{ cursor: pointer; user-select: none; white-space: nowrap; }}
+  table.sortable th::after {{ content: "\\2195"; color: #b7c2da; margin-left: 4px; font-weight: 400; }}
+  table.sortable th.sort-asc::after {{ content: "\\25B2"; color: var(--blue-dark); }}
+  table.sortable th.sort-desc::after {{ content: "\\25BC"; color: var(--blue-dark); }}
   .note {{ color: var(--text-muted); font-size: 0.8rem; margin-top: 12px; }}
   .actions {{ margin: 0 0 24px; }}
   .actions button {{
@@ -324,6 +328,7 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
     .actions {{ display: none; }}
     body {{ padding: 0; }}
     @page {{ size: A4 portrait; margin: 12mm; }}
+    table.sortable th::after {{ content: ""; }}
   }}
 </style>
 </head>
@@ -332,15 +337,54 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
   <h1>{title}</h1>
   {table}
   <p class="note">{note}</p>
+  <script>
+    (function() {{
+      var table = document.querySelector("table.sortable");
+      if (!table) return;
+      var headers = table.querySelectorAll("thead th");
+      var state = {{ col: -1, dir: 1 }};
+      headers.forEach(function(th, colIndex) {{
+        th.addEventListener("click", function() {{
+          var tbody = table.querySelector("tbody");
+          var totalRow = tbody.querySelector("tr.total-row");
+          var rows = Array.prototype.filter.call(tbody.querySelectorAll("tr"), function(r) {{
+            return !r.classList.contains("total-row");
+          }});
+          var dir = (state.col === colIndex) ? -state.dir : 1;
+          state = {{ col: colIndex, dir: dir }};
+          rows.sort(function(a, b) {{
+            var av = a.children[colIndex].dataset.value;
+            var bv = b.children[colIndex].dataset.value;
+            var an = parseFloat(av), bn = parseFloat(bv);
+            var cmp;
+            if (!isNaN(an) && !isNaN(bn) && av !== "" && bv !== "") {{
+              cmp = an - bn;
+            }} else {{
+              cmp = av.localeCompare(bv, "fr");
+            }}
+            return cmp * dir;
+          }});
+          rows.forEach(function(r) {{ tbody.appendChild(r); }});
+          if (totalRow) tbody.appendChild(totalRow);
+          headers.forEach(function(h) {{ h.classList.remove("sort-asc", "sort-desc"); }});
+          th.classList.add(dir === 1 ? "sort-asc" : "sort-desc");
+        }});
+      }});
+    }})();
+  </script>
 </body>
 </html>
 """
 
 
 def _build_summary_table(first_header: str, rows: list, total_row: Optional[tuple] = None) -> str:
-    """`rows` et `total_row` (optionnel) : (label, Summary). `total_row`, si fourni, est
-    affiché en dernière ligne, mise en évidence."""
-    ratio_thresholds = sorted((rows[0] if rows else total_row)[1].ratios) if (rows or total_row) else []
+    """`rows` : liste de (label, Summary) ou (label, Summary, clé_de_tri) si le libellé
+    affiché ne doit pas servir tel quel au tri de la 1ère colonne (ex : "Août 2026" doit se
+    trier chronologiquement, pas alphabétiquement). `total_row` (optionnel, même format) est
+    affiché en dernière ligne, mise en évidence, et reste toujours en bas quel que soit le
+    tri (voir le script de tri dans SYNTHESIS_TEMPLATE)."""
+    sample = rows[0] if rows else total_row
+    ratio_thresholds = sorted(sample[1].ratios) if sample else []
     header_cells = (
         f"<th>{html.escape(first_header)}</th><th>Appels</th><th>Durée moy.<br>traitement</th>"
         "<th>Attente<br>globale</th><th>Attente<br>sonnerie</th>"
@@ -348,22 +392,28 @@ def _build_summary_table(first_header: str, rows: list, total_row: Optional[tupl
         + "<th>Taux de<br>TAG</th>"
     )
 
-    def _row_cells(label: str, summary: Summary) -> str:
+    def _row_cells(label: str, summary: Summary, sort_key=None) -> str:
+        first_value = html.escape(str(label if sort_key is None else sort_key))
         return (
-            f"<td>{html.escape(label)}</td>"
-            f"<td>{summary.total_calls}</td>"
-            f"<td>{_fmt_duration(summary.avg_comm_seconds)}</td>"
-            f"<td>{_fmt_duration(summary.avg_wait_global_seconds)}</td>"
-            f"<td>{_fmt_duration(summary.avg_wait_sonnerie_seconds)}</td>"
-            + "".join(f"<td>{_fmt_pct(summary.ratios[m])}</td>" for m in ratio_thresholds)
-            + f"<td>{_fmt_pct(summary.tag_rate_pct)}</td>"
+            f'<td data-value="{first_value}">{html.escape(label)}</td>'
+            f'<td data-value="{summary.total_calls}">{summary.total_calls}</td>'
+            f'<td data-value="{summary.avg_comm_seconds}">{_fmt_duration(summary.avg_comm_seconds)}</td>'
+            f'<td data-value="{summary.avg_wait_global_seconds}">{_fmt_duration(summary.avg_wait_global_seconds)}</td>'
+            f'<td data-value="{summary.avg_wait_sonnerie_seconds}">{_fmt_duration(summary.avg_wait_sonnerie_seconds)}</td>'
+            + "".join(
+                f'<td data-value="{summary.ratios[m]}">{_fmt_pct(summary.ratios[m])}</td>' for m in ratio_thresholds
+            )
+            + f'<td data-value="{summary.tag_rate_pct}">{_fmt_pct(summary.tag_rate_pct)}</td>'
         )
 
-    body_rows = [f"<tr>{_row_cells(label, summary)}</tr>" for label, summary in rows]
+    body_rows = [f"<tr>{_row_cells(*r)}</tr>" for r in rows]
     if total_row:
         body_rows.append(f'<tr class="total-row">{_row_cells(*total_row)}</tr>')
 
-    return f"<table><thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+    return (
+        '<table class="sortable">'
+        f"<thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+    )
 
 
 def render_monthly_synthesis(label: str, rows: list) -> str:
@@ -372,7 +422,7 @@ def render_monthly_synthesis(label: str, rows: list) -> str:
     for ym, summary in rows:
         year, month = ym.split("-")
         month_label = f"{_MOIS[int(month) - 1].capitalize()} {year}"
-        formatted_rows.append((month_label, summary))
+        formatted_rows.append((month_label, summary, int(year) * 100 + int(month)))
 
     return SYNTHESIS_TEMPLATE.format(
         title=html.escape(f"Synthèse mensuelle — {label}"),

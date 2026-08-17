@@ -197,14 +197,19 @@ def list_code_affaires(conn: sqlite3.Connection) -> list[str]:
 
 # -- Opérateurs -------------------------------------------------------------------
 
-# Préfixes de login exclus en permanence du répertoire opérateurs : ce sont des postes
-# clients raccordés au standard téléphonique (ex: "2205"), pas de vrais opérateurs
-# télésecrétaires. Les appels correspondants restent en base (comptés dans "Tous les
-# opérateurs"), seule la fiche répertoire n'est jamais créée/affichée.
+# Logins exclus en permanence du répertoire opérateurs (postes clients raccordés au
+# standard, comptes de test, etc. — pas de vrais opérateurs télésecrétaires), plus un
+# préfixe numérique pour tout futur poste rapporté directement sous une forme "22xx". Les
+# appels correspondants restent en base (comptés dans "Tous les opérateurs"), seule la
+# fiche répertoire n'est jamais créée/affichée.
 EXCLUDED_OPERATOR_LOGIN_PREFIXES = ("22",)
+EXCLUDED_OPERATOR_LOGINS = {"jjanots", "ccharvin", "valegre", "pepinat", "claurence"}
 
 
 def is_excluded_operator_login(login: str) -> bool:
+    normalized = login.strip().casefold()
+    if normalized in EXCLUDED_OPERATOR_LOGINS:
+        return True
     return any(login.startswith(p) for p in EXCLUDED_OPERATOR_LOGIN_PREFIXES)
 
 

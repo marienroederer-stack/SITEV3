@@ -14,9 +14,9 @@ ajoutés automatiquement aux répertoires (Listing clients / Listing opérateurs
 le nom ou le code affaire d'un SDA déjà connu change dans un nouvel import, la
 fiche est mise à jour mais l'historique des appels reste attaché au même SDA.
 
-Les logins opérateur commençant par un préfixe exclu (voir
-db.EXCLUDED_OPERATOR_LOGIN_PREFIXES — ex: "22...", des postes clients raccordés au
-standard et non de vrais opérateurs) ne sont jamais ajoutés au répertoire ; les
+Les logins opérateur exclus (voir db.EXCLUDED_OPERATOR_LOGINS et
+db.EXCLUDED_OPERATOR_LOGIN_PREFIXES — des postes clients raccordés au standard et non
+de vrais opérateurs) ne sont jamais ajoutés au répertoire ; les
 appels correspondants restent en base mais n'apparaissent pas comme opérateur
 sélectionnable.
 """
