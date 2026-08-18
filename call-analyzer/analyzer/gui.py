@@ -646,6 +646,9 @@ class ImportsLogTab(QWidget):
         layout = QVBoxLayout(self)
 
         actions = QHBoxLayout()
+        archive_btn = QPushButton("Archiver une année…")
+        archive_btn.clicked.connect(self.on_archive)
+        actions.addWidget(archive_btn)
         purge_btn = QPushButton("Purger les données…")
         purge_btn.clicked.connect(self.on_purge)
         actions.addWidget(purge_btn)
@@ -654,6 +657,10 @@ class ImportsLogTab(QWidget):
         actions.addWidget(legacy_btn)
         actions.addStretch(1)
         layout.addLayout(actions)
+
+        self.archived_years_label = QLabel()
+        self.archived_years_label.setStyleSheet("color: #5a5f73;")
+        layout.addWidget(self.archived_years_label)
 
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.COLUMNS))
@@ -667,6 +674,21 @@ class ImportsLogTab(QWidget):
         dialog = PurgeDialog(self.conn, self)
         if dialog.exec() == QDialog.Accepted:
             self.on_data_changed()
+
+    def on_archive(self):
+        dialog = ArchiveDialog(self.conn, self)
+        if dialog.exec() == QDialog.Accepted:
+            self._update_archived_years_label()
+
+    def _update_archived_years_label(self):
+        years = db.archived_years(self.conn)
+        if years:
+            self.archived_years_label.setText(
+                "Années archivées (figées pour la Comparaison long terme) : "
+                + ", ".join(str(y) for y in years)
+            )
+        else:
+            self.archived_years_label.setText("Aucune année archivée pour l'instant.")
 
     def on_import_legacy(self):
         path_str, _ = QFileDialog.getOpenFileName(
@@ -732,6 +754,70 @@ class ImportsLogTab(QWidget):
                 item = QTableWidgetItem(str(v))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row, col, item)
+        self._update_archived_years_label()
+
+
+class ArchiveDialog(QDialog):
+    """Fige en base, pour une année choisie, la synthèse mensuelle globale (tous
+    clients/opérateurs confondus) utilisée par la "Comparaison long terme" — afin de
+    pouvoir ensuite purger les appels détaillés de cette période (Purger les données…)
+    sans perdre ces tableaux globaux. Le détail par client/opérateur n'est pas conservé :
+    seuls les indicateurs globaux affichés dans cet onglet le sont."""
+
+    def __init__(self, conn, parent=None):
+        super().__init__(parent)
+        self.conn = conn
+        self.setWindowTitle("Archiver une année")
+        self.setMinimumWidth(480)
+
+        layout = QVBoxLayout(self)
+
+        info = QLabel(
+            "Fige durablement la synthèse globale (nombre d'appels, durée moyenne de "
+            "traitement, ratios d'appels longs, taux de TAG) de chaque mois de l'année "
+            "choisie, telle qu'affichée dans \"Comparaison long terme\" pour \"Tous les "
+            "clients\" / \"Tous les opérateurs\".\n\n"
+            "Une fois archivée, cette synthèse reste visible même après avoir purgé les "
+            "appels détaillés de cette période (Purger les données…) — seul le détail par "
+            "client ou opérateur est alors perdu, pas ces tableaux globaux."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        form = QHBoxLayout()
+        form.addWidget(QLabel("Année à archiver :"))
+        self.year_combo = QComboBox()
+        years = db.years_with_calls(conn)
+        archived = set(db.archived_years(conn))
+        for year in sorted(years, reverse=True):
+            suffix = " (déjà archivée — sera remplacée)" if year in archived else ""
+            self.year_combo.addItem(f"{year}{suffix}", year)
+        form.addWidget(self.year_combo, 1)
+        layout.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        self.archive_btn = QPushButton("Archiver")
+        self.archive_btn.clicked.connect(self._on_archive_clicked)
+        self.archive_btn.setEnabled(bool(years))
+        btn_row.addWidget(self.archive_btn)
+        layout.addLayout(btn_row)
+
+        if not years:
+            info.setText("Aucune année avec des appels enregistrés à archiver pour l'instant.")
+
+    def _on_archive_clicked(self):
+        year = self.year_combo.currentData()
+        n_months = db.archive_year(self.conn, year)
+        QMessageBox.information(
+            self,
+            APP_TITLE,
+            f"Synthèse globale de {n_months} mois de l'année {year} archivée avec succès.",
+        )
+        self.accept()
 
 
 class PurgeDialog(QDialog):
@@ -749,7 +835,10 @@ class PurgeDialog(QDialog):
         info = QLabel(
             "Supprime définitivement les appels enregistrés avant la date choisie.\n"
             "Les fiches clients et opérateurs ne sont pas affectées, et réimporter plus "
-            "tard un fichier couvrant la période purgée fonctionne normalement."
+            "tard un fichier couvrant la période purgée fonctionne normalement.\n\n"
+            "Pensez à archiver une année (bouton \"Archiver une année…\") avant de la "
+            "purger si vous voulez conserver ses tableaux de Comparaison long terme "
+            "globaux (\"Tous les clients\" / \"Tous les opérateurs\")."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -803,7 +892,11 @@ class PurgeDialog(QDialog):
             QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
-            db.purge_calls_before(self.conn, self._cutoff_iso())
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                db.purge_calls_before(self.conn, self._cutoff_iso())
+            finally:
+                QApplication.restoreOverrideCursor()
             self.accept()
 
 

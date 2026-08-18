@@ -272,18 +272,71 @@ def build_summary_for_month(
     return build_summary(rows)
 
 
+def _summary_from_archive_row(row) -> Summary:
+    """Reconstruit un Summary (uniquement les champs utilisés par la Comparaison long
+    terme) à partir d'un mois figé via db.archive_year — voir db.year_archives."""
+    total = row["total_calls"]
+    summary = Summary()
+    summary.total_calls = total
+    summary.avg_comm_seconds = row["sum_comm_seconds"] / total if total else 0.0
+    summary.ratios = {
+        3: round(row["over_3"] / total * 100, 1) if total else 0.0,
+        4: round(row["over_4"] / total * 100, 1) if total else 0.0,
+        5: round(row["over_5"] / total * 100, 1) if total else 0.0,
+        6: round(row["over_6"] / total * 100, 1) if total else 0.0,
+    }
+    summary.tag_rate_pct = round(row["tagged"] / total * 100, 1) if total else 0.0
+    return summary
+
+
 def build_summary_for_year(
     conn: Connection, dimension: str, value: Optional[str], year: int
 ) -> Summary:
     """Résumé de l'année entière (et non la moyenne des résumés mensuels : les ratios et
     moyennes sont recalculés sur l'ensemble des appels de l'année, pour rester exacts même
-    si le nombre d'appels varie fortement d'un mois à l'autre)."""
+    si le nombre d'appels varie fortement d'un mois à l'autre). Pour la valeur globale
+    ("Tous les X", value=None), les mois archivés (db.archive_year, voir
+    build_monthly_synthesis) sont comptabilisés depuis leur synthèse figée plutôt que
+    depuis les appels détaillés, qui peuvent avoir été purgés entre-temps."""
+    total = 0
+    sum_comm = 0
+    over = {m: 0 for m in SEUILS_MINUTES}
+    tagged = 0
+    archived_months: set = set()
+
+    if value is None:
+        for row in db.archived_months_for_year(conn, year):
+            archived_months.add(row["month"])
+            total += row["total_calls"]
+            sum_comm += row["sum_comm_seconds"]
+            over[3] += row["over_3"]
+            over[4] += row["over_4"]
+            over[5] += row["over_5"]
+            over[6] += row["over_6"]
+            tagged += row["tagged"]
+
     start = date(year, 1, 1)
     end = date(year, 12, 31)
     start_iso = datetime.combine(start, datetime.min.time()).isoformat()
     end_iso = datetime.combine(end, datetime.max.time()).isoformat()
-    rows = db.calls_for_dimension(conn, dimension, value, start_iso, end_iso)
-    return build_summary(rows)
+    for row in db.calls_for_dimension(conn, dimension, value, start_iso, end_iso):
+        month = int(row["date_heure"][5:7])
+        if month in archived_months:
+            continue  # déjà comptabilisé via la synthèse figée de ce mois
+        total += 1
+        sum_comm += row["comm_seconds"]
+        for m in SEUILS_MINUTES:
+            if row["comm_seconds"] > m * 60:
+                over[m] += 1
+        if (row["tag"] or "").strip():
+            tagged += 1
+
+    summary = Summary()
+    summary.total_calls = total
+    summary.avg_comm_seconds = sum_comm / total if total else 0.0
+    summary.ratios = {m: round(over[m] / total * 100, 1) if total else 0.0 for m in SEUILS_MINUTES}
+    summary.tag_rate_pct = round(tagged / total * 100, 1) if total else 0.0
+    return summary
 
 
 def build_monthly_synthesis(
@@ -292,11 +345,19 @@ def build_monthly_synthesis(
     """Un résumé (Summary) par mois pour la dimension/valeur donnée, pour tous les mois où
     au moins un appel existe dans la base (toutes dimensions confondues) — un mois sans
     appel pour cette valeur précise apparaît avec des totaux à zéro plutôt que d'être
-    omis, pour que la synthèse couvre toute la période importée sans trou."""
-    return [
-        (ym, build_summary_for_month(conn, dimension, value, *(int(x) for x in ym.split("-"))))
-        for ym in db.months_with_calls(conn)
-    ]
+    omis, pour que la synthèse couvre toute la période importée sans trou. Pour la valeur
+    globale ("Tous les X", value=None), les mois archivés (db.archive_year) restent
+    inclus avec leur synthèse figée même si leurs appels détaillés ont été purgés depuis."""
+    archive_by_month = db.archived_months_map(conn) if value is None else {}
+    months = sorted(set(db.months_with_calls(conn)) | set(archive_by_month))
+    result = []
+    for ym in months:
+        if ym in archive_by_month:
+            summary = _summary_from_archive_row(archive_by_month[ym])
+        else:
+            summary = build_summary_for_month(conn, dimension, value, *(int(x) for x in ym.split("-")))
+        result.append((ym, summary))
+    return result
 
 
 def _dimension_entries(conn: Connection, dimension: str) -> list[tuple[Optional[str], str]]:

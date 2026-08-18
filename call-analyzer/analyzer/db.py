@@ -66,6 +66,24 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Synthèse mensuelle globale (tous clients/opérateurs confondus) figée volontairement par
+-- l'utilisateur pour une année, afin de pouvoir ensuite purger les appels détaillés de
+-- cette période sans perdre les tableaux de "Comparaison long terme" (valeur "Tous les
+-- X" uniquement — voir archive_year()).
+CREATE TABLE IF NOT EXISTS year_archives (
+    year             INTEGER NOT NULL,
+    month            INTEGER NOT NULL,
+    total_calls      INTEGER NOT NULL DEFAULT 0,
+    sum_comm_seconds INTEGER NOT NULL DEFAULT 0,
+    over_3           INTEGER NOT NULL DEFAULT 0,
+    over_4           INTEGER NOT NULL DEFAULT 0,
+    over_5           INTEGER NOT NULL DEFAULT 0,
+    over_6           INTEGER NOT NULL DEFAULT 0,
+    tagged           INTEGER NOT NULL DEFAULT 0,
+    archived_at      TEXT NOT NULL,
+    PRIMARY KEY (year, month)
+);
 """
 
 
@@ -351,6 +369,71 @@ def months_with_calls(conn: sqlite3.Connection) -> list[str]:
     return [r["ym"] for r in rows]
 
 
+def years_with_calls(conn: sqlite3.Connection) -> list[int]:
+    """Années (calendaires) pour lesquelles au moins un appel comptabilisé est enregistré —
+    sert à proposer les années archivables."""
+    rows = conn.execute(
+        "SELECT DISTINCT CAST(substr(date_heure, 1, 4) AS INTEGER) AS y FROM calls "
+        "WHERE comm_seconds >= ? ORDER BY y",
+        (MIN_COMM_SECONDS,),
+    ).fetchall()
+    return [r["y"] for r in rows]
+
+
+def archive_year(conn: sqlite3.Connection, year: int) -> int:
+    """Calcule et enregistre en base, de façon permanente, la synthèse globale (tous
+    clients/opérateurs confondus) de chaque mois de `year` ayant au moins un appel
+    comptabilisé. Une fois archivé, un mois reste visible dans la "Comparaison long terme"
+    (valeur "Tous les clients"/"Tous les opérateurs" uniquement) même après purge des
+    appels détaillés de cette période — seule cette synthèse globale est figée, pas le
+    détail par client ou opérateur. Ré-archiver une année déjà archivée remplace la
+    synthèse existante (utile si des appels ont été réimportés depuis). Retourne le nombre
+    de mois archivés."""
+    rows = conn.execute(
+        "SELECT CAST(substr(date_heure, 6, 2) AS INTEGER) AS month, COUNT(*) AS total, "
+        "SUM(comm_seconds) AS sum_comm, "
+        "SUM(CASE WHEN comm_seconds > 180 THEN 1 ELSE 0 END) AS over_3, "
+        "SUM(CASE WHEN comm_seconds > 240 THEN 1 ELSE 0 END) AS over_4, "
+        "SUM(CASE WHEN comm_seconds > 300 THEN 1 ELSE 0 END) AS over_5, "
+        "SUM(CASE WHEN comm_seconds > 360 THEN 1 ELSE 0 END) AS over_6, "
+        "SUM(CASE WHEN TRIM(COALESCE(tag, '')) != '' THEN 1 ELSE 0 END) AS tagged "
+        "FROM calls WHERE substr(date_heure, 1, 4) = ? AND comm_seconds >= ? GROUP BY month",
+        (str(year), MIN_COMM_SECONDS),
+    ).fetchall()
+    now = _now_iso()
+    for row in rows:
+        conn.execute(
+            "INSERT INTO year_archives (year, month, total_calls, sum_comm_seconds, over_3, "
+            "over_4, over_5, over_6, tagged, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(year, month) DO UPDATE SET total_calls = excluded.total_calls, "
+            "sum_comm_seconds = excluded.sum_comm_seconds, over_3 = excluded.over_3, "
+            "over_4 = excluded.over_4, over_5 = excluded.over_5, over_6 = excluded.over_6, "
+            "tagged = excluded.tagged, archived_at = excluded.archived_at",
+            (
+                year, row["month"], row["total"], row["sum_comm"] or 0,
+                row["over_3"], row["over_4"], row["over_5"], row["over_6"],
+                row["tagged"], now,
+            ),
+        )
+    conn.commit()
+    return len(rows)
+
+
+def archived_years(conn: sqlite3.Connection) -> list[int]:
+    rows = conn.execute("SELECT DISTINCT year FROM year_archives ORDER BY year").fetchall()
+    return [r["year"] for r in rows]
+
+
+def archived_months_map(conn: sqlite3.Connection) -> dict:
+    """{"YYYY-MM": Row} pour tous les mois archivés, toutes années confondues."""
+    rows = conn.execute("SELECT * FROM year_archives").fetchall()
+    return {f"{r['year']:04d}-{r['month']:02d}": r for r in rows}
+
+
+def archived_months_for_year(conn: sqlite3.Connection, year: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM year_archives WHERE year = ? ORDER BY month", (year,)).fetchall()
+
+
 def count_calls_before(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     """Nombre d'appels dont la date est strictement antérieure à `cutoff_iso`."""
     return conn.execute("SELECT COUNT(*) AS n FROM calls WHERE date_heure < ?", (cutoff_iso,)).fetchone()["n"]
@@ -361,9 +444,12 @@ def purge_calls_before(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     opérateurs ne sont pas touchées, et le journal des imports (imports) est conservé tel
     quel comme trace historique. Comme le dédoublonnage se fait par Call Id, réimporter par
     la suite un fichier couvrant la période purgée réinsère normalement les appels effacés
-    (ce ne sont plus des doublons)."""
+    (ce ne sont plus des doublons). Termine par un VACUUM : un simple DELETE libère de la
+    place à l'intérieur du fichier SQLite pour de futures données mais ne réduit pas sa
+    taille sur le disque — le VACUUM réécrit le fichier pour qu'il rétrécisse réellement."""
     cur = conn.execute("DELETE FROM calls WHERE date_heure < ?", (cutoff_iso,))
     conn.commit()
+    conn.execute("VACUUM")
     return cur.rowcount
 
 
