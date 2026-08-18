@@ -147,14 +147,39 @@ class SearchableComboBox(QComboBox):
         completer.setCaseSensitivity(Qt.CaseInsensitive)
 
 
+class PeriodState:
+    """Période (vue, créneau, décalage) partagée entre les onglets Par client / Par
+    opérateur / Par code affaire : changer de période dans l'un se reflète dans les
+    autres, pour ne pas perdre son contexte en changeant d'onglet."""
+
+    def __init__(self):
+        self.period_type = "mois"
+        self.granularity = 60
+        self.offset = 0
+        self._listeners: list = []
+
+    def subscribe(self, callback) -> None:
+        self._listeners.append(callback)
+
+    def set(self, period_type=None, granularity=None, offset=None) -> None:
+        if period_type is not None:
+            self.period_type = period_type
+        if granularity is not None:
+            self.granularity = granularity
+        if offset is not None:
+            self.offset = offset
+        for callback in self._listeners:
+            callback()
+
+
 class AnalysisTab(QWidget):
     """Un onglet d'analyse (par client, par opérateur ou par code affaire)."""
 
-    def __init__(self, conn, dimension: str, dimension_title: str):
+    def __init__(self, conn, dimension: str, dimension_title: str, period_state: PeriodState):
         super().__init__()
         self.conn = conn
         self.dimension = dimension
-        self.period_offset = 0
+        self.period_state = period_state
         self._current_start = self._current_end = date.today()
 
         layout = QVBoxLayout(self)
@@ -170,16 +195,14 @@ class AnalysisTab(QWidget):
         self.period_type_combo.addItem("Jour", "jour")
         self.period_type_combo.addItem("Semaine", "semaine")
         self.period_type_combo.addItem("Mois", "mois")
-        self.period_type_combo.setCurrentIndex(2)  # Mois par défaut
-        self.period_type_combo.currentIndexChanged.connect(self._on_period_type_changed)
+        self.period_type_combo.currentIndexChanged.connect(self._on_period_type_control_changed)
         controls.addWidget(self.period_type_combo)
 
         controls.addWidget(QLabel("Créneaux :"))
         self.granularity_combo = QComboBox()
         for g in stats.GRANULARITES:
             self.granularity_combo.addItem(f"{g} min", g)
-        self.granularity_combo.setCurrentIndex(2)  # 60 min par défaut (par heure)
-        self.granularity_combo.currentIndexChanged.connect(self.refresh)
+        self.granularity_combo.currentIndexChanged.connect(self._on_granularity_control_changed)
         controls.addWidget(self.granularity_combo)
 
         layout.addLayout(controls)
@@ -188,6 +211,10 @@ class AnalysisTab(QWidget):
         prev_btn = QPushButton("◀ Période précédente")
         prev_btn.clicked.connect(self.on_prev_period)
         nav.addWidget(prev_btn)
+
+        today_btn = QPushButton("Période actuelle")
+        today_btn.clicked.connect(self.on_today)
+        nav.addWidget(today_btn)
 
         self.period_label = QLabel()
         self.period_label.setStyleSheet("font-weight: 600;")
@@ -226,6 +253,8 @@ class AnalysisTab(QWidget):
 
         self.reload_values()
         self.reload_compare_months()
+        self.period_state.subscribe(self._sync_period_controls)
+        self._sync_period_controls()
 
     # -- Rechargement des listes déroulantes --------------------------------
 
@@ -265,26 +294,44 @@ class AnalysisTab(QWidget):
 
     # -- Navigation -----------------------------------------------------
 
-    def _on_period_type_changed(self):
-        self.period_offset = 0
-        self.refresh()
+    def _on_period_type_control_changed(self):
+        self.period_state.set(period_type=self.period_type_combo.currentData(), offset=0)
+
+    def _on_granularity_control_changed(self):
+        self.period_state.set(granularity=self.granularity_combo.currentData())
+
+    def on_today(self):
+        self.period_state.set(offset=0)
 
     def on_prev_period(self):
-        self.period_offset -= 1
-        self.refresh()
+        self.period_state.set(offset=self.period_state.offset - 1)
 
     def on_next_period(self):
-        self.period_offset += 1
+        self.period_state.set(offset=self.period_state.offset + 1)
+
+    def _sync_period_controls(self):
+        self.period_type_combo.blockSignals(True)
+        idx = self.period_type_combo.findData(self.period_state.period_type)
+        if idx >= 0:
+            self.period_type_combo.setCurrentIndex(idx)
+        self.period_type_combo.blockSignals(False)
+
+        self.granularity_combo.blockSignals(True)
+        idx = self.granularity_combo.findData(self.period_state.granularity)
+        if idx >= 0:
+            self.granularity_combo.setCurrentIndex(idx)
+        self.granularity_combo.blockSignals(False)
+
         self.refresh()
 
     # -- Rafraîchissement --------------------------------------------------
 
     def refresh(self):
         value = self.value_combo.currentData()
-        period_type = self.period_type_combo.currentData() or "semaine"
-        granularity = self.granularity_combo.currentData() or 60
+        period_type = self.period_state.period_type
+        granularity = self.period_state.granularity
 
-        start, end = stats.get_period(period_type, date.today(), self.period_offset)
+        start, end = stats.get_period(period_type, date.today(), self.period_state.offset)
         self._current_start, self._current_end = start, end
         data = stats.build_report_data(self.conn, self.dimension, value, period_type, start, end, granularity)
         self.period_label.setText(_period_label(period_type, start, end))
@@ -460,7 +507,11 @@ class LongTermTab(QWidget):
         value = self.value_combo.currentData()
         label = self.value_combo.currentText()
         rows = stats.build_monthly_synthesis(self.conn, self.dimension, value)
-        html_content = report.render_long_term_comparison(label, rows)
+        years = {ym.split("-")[0] for ym, _ in rows}
+        year_summaries = {
+            year: stats.build_summary_for_year(self.conn, self.dimension, value, int(year)) for year in years
+        }
+        html_content = report.render_long_term_comparison(label, rows, year_summaries)
         self.web_view.setHtml(html_content)
 
     def on_export_pdf(self):
@@ -657,8 +708,7 @@ class ImportsLogTab(QWidget):
                 f"Lignes invalides : {result.invalid_rows}\n"
                 f"Nouveaux opérateurs détectés : {len(result.new_operators)}\n\n"
                 f"Rappel : pour cette période, l'attente globale ne reflète que la sonnerie "
-                f"(pas de file/annonce dans ce format) et les ratios d'appels longs ne sont pas "
-                f"disponibles (pas de Durée Totale)."
+                f"(pas de file/annonce dans ce format)."
             )
             + unresolved_text,
         )
@@ -783,9 +833,10 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, 1)
 
-        self.client_tab = AnalysisTab(self.conn, "client", "Client")
-        self.operateur_tab = AnalysisTab(self.conn, "operateur", "Opérateur")
-        self.code_affaire_tab = AnalysisTab(self.conn, "code_affaire", "Code affaire")
+        self.period_state = PeriodState()
+        self.client_tab = AnalysisTab(self.conn, "client", "Client", self.period_state)
+        self.operateur_tab = AnalysisTab(self.conn, "operateur", "Opérateur", self.period_state)
+        self.code_affaire_tab = AnalysisTab(self.conn, "code_affaire", "Code affaire", self.period_state)
         self.long_term_tab = LongTermTab(self.conn)
         self.clients_listing_tab = ClientsListingTab(self.conn)
         self.operators_listing_tab = OperatorsListingTab(self.conn)

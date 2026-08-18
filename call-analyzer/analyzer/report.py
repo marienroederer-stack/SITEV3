@@ -327,6 +327,7 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
   td:first-child, th:first-child {{ text-align: left; font-weight: 600; }}
   tr:nth-child(even) td {{ background: var(--bg-alt); }}
   tr.total-row td {{ background: #e9f0ff; font-weight: 700; border-top: 2px solid var(--blue-dark); }}
+  tr th.year-col, tr td.year-col {{ background: #e9f0ff; font-weight: 700; border-right: 2px solid var(--blue-dark); }}
   table.sortable th {{ cursor: pointer; user-select: none; white-space: nowrap; }}
   table.sortable th::after {{ content: "\\2195"; color: #b7c2da; margin-left: 4px; font-weight: 400; }}
   table.sortable th.sort-asc::after {{ content: "\\25B2"; color: var(--blue-dark); }}
@@ -469,12 +470,13 @@ def render_dimension_breakdown(
     )
 
 
-def render_long_term_comparison(label: str, rows: list) -> str:
+def render_long_term_comparison(label: str, rows: list, year_summaries: dict) -> str:
     """Comparaison sur le long terme : un tableau par année (l'année la plus récente en
-    premier), les mois de l'année en colonnes et un sous-ensemble d'indicateurs clés en
-    lignes (voir stats.build_monthly_synthesis pour `rows`). Une nouvelle année apparaît
-    automatiquement dès qu'elle contient au moins un mois importé — aucune liste d'années
-    à tenir à jour."""
+    premier), les mois de l'année en colonnes (avec une colonne "Année" en tête, en gras,
+    reprenant les totaux/moyennes de l'année entière — voir stats.build_summary_for_year)
+    et un sous-ensemble d'indicateurs clés en lignes (voir stats.build_monthly_synthesis
+    pour `rows`). Une nouvelle année apparaît automatiquement dès qu'elle contient au moins
+    un mois importé — aucune liste d'années à tenir à jour."""
     by_year: dict = {}
     for ym, summary in rows:
         year = ym.split("-")[0]
@@ -492,12 +494,18 @@ def render_long_term_comparison(label: str, rows: list) -> str:
     for year in sorted(by_year, reverse=True):
         year_rows = by_year[year]
         month_labels = [_MOIS[int(ym.split("-")[1]) - 1].capitalize() for ym, _ in year_rows]
-        header_cells = "<th>Indicateur</th>" + "".join(f"<th>{html.escape(m)}</th>" for m in month_labels)
+        header_cells = (
+            "<th>Indicateur</th>"
+            f'<th class="year-col">{html.escape(year)}</th>'
+            + "".join(f"<th>{html.escape(m)}</th>" for m in month_labels)
+        )
 
+        year_summary = year_summaries.get(year)
         body_rows = []
         for metric_label, fmt_fn in metric_rows:
+            year_cell = f'<td class="year-col">{fmt_fn(year_summary)}</td>' if year_summary else '<td class="year-col">—</td>'
             cells = "".join(f"<td>{fmt_fn(summary)}</td>" for _, summary in year_rows)
-            body_rows.append(f"<tr><th>{html.escape(metric_label)}</th>{cells}</tr>")
+            body_rows.append(f"<tr><th>{html.escape(metric_label)}</th>{year_cell}{cells}</tr>")
 
         table_html = (
             '<div class="table-scroll"><table>'
@@ -508,5 +516,6 @@ def render_long_term_comparison(label: str, rows: list) -> str:
     return SYNTHESIS_TEMPLATE.format(
         title=html.escape(f"Comparaison long terme — {label}"),
         table="".join(sections),
-        note="Un mois sans appel pour cette sélection apparaît avec des totaux à zéro plutôt que d'être omis.",
+        note="Un mois sans appel pour cette sélection apparaît avec des totaux à zéro plutôt que d'être omis. "
+        "La colonne « Année » reprend les totaux/moyennes de l'année entière (et non la moyenne des mois).",
     )

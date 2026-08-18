@@ -19,7 +19,8 @@ OUVERTURE_SAMEDI = (8, 12)
 GRANULARITES = [15, 30, 60]
 TYPES_PERIODE = ["jour", "semaine", "mois"]
 
-# Seuils (en minutes) de durée d'appel (colonne "Durée Totale") mis en avant dans le rapport.
+# Seuils (en minutes) de durée d'appel (colonne "Comm" — durée de communication réelle,
+# cohérent avec la durée moyenne de traitement) mis en avant dans le rapport.
 SEUILS_MINUTES = [3, 4, 5, 6]
 
 # Catégories de tag recherchées (sous-chaîne, insensible à la casse) pour le tableau de
@@ -161,9 +162,9 @@ def build_summary(rows) -> Summary:
         sum_comm += row["comm_seconds"]
         sum_wait_global += row["annonce_seconds"] + row["file_seconds"] + row["sonnerie_seconds"]
         sum_wait_sonnerie += row["sonnerie_seconds"]
-        duree = row["duree_totale_seconds"]
+        comm_duree = row["comm_seconds"]
         for m in SEUILS_MINUTES:
-            if duree > m * 60:
+            if comm_duree > m * 60:
                 over[m] += 1
         tag_value = (row["tag"] or "").strip()
         if tag_value:
@@ -265,6 +266,20 @@ def build_summary_for_month(
 ) -> Summary:
     start = date(year, month, 1)
     end = add_months(start, 1) - timedelta(days=1)
+    start_iso = datetime.combine(start, datetime.min.time()).isoformat()
+    end_iso = datetime.combine(end, datetime.max.time()).isoformat()
+    rows = db.calls_for_dimension(conn, dimension, value, start_iso, end_iso)
+    return build_summary(rows)
+
+
+def build_summary_for_year(
+    conn: Connection, dimension: str, value: Optional[str], year: int
+) -> Summary:
+    """Résumé de l'année entière (et non la moyenne des résumés mensuels : les ratios et
+    moyennes sont recalculés sur l'ensemble des appels de l'année, pour rester exacts même
+    si le nombre d'appels varie fortement d'un mois à l'autre)."""
+    start = date(year, 1, 1)
+    end = date(year, 12, 31)
     start_iso = datetime.combine(start, datetime.min.time()).isoformat()
     end_iso = datetime.combine(end, datetime.max.time()).isoformat()
     rows = db.calls_for_dimension(conn, dimension, value, start_iso, end_iso)
