@@ -203,7 +203,10 @@ def list_code_affaires(conn: sqlite3.Connection) -> list[str]:
 # appels correspondants restent en base (comptés dans "Tous les opérateurs"), seule la
 # fiche répertoire n'est jamais créée/affichée.
 EXCLUDED_OPERATOR_LOGIN_PREFIXES = ("22",)
-EXCLUDED_OPERATOR_LOGINS = {"jjanots", "ccharvin", "valegre", "pepinat", "claurence"}
+EXCLUDED_OPERATOR_LOGINS = {
+    "jjanots", "ccharvin", "valegre", "pepinat", "claurence",
+    "mlpouzadoux", "psalabert", "cchartron",
+}
 
 
 def is_excluded_operator_login(login: str) -> bool:
