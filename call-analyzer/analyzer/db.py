@@ -301,6 +301,16 @@ def insert_call(conn: sqlite3.Connection, **fields) -> bool:
     return True
 
 
+# Durée de communication (colonne "Comm") minimale pour qu'un appel compte dans les
+# statistiques produites (grilles, synthèses, comparaisons, listings...) : en-deçà, ce
+# n'est pas un appel traité (raccroché quasi immédiatement). Filtre appliqué à la lecture
+# uniquement — les lignes restent en base telles qu'importées, donc ce seuil peut être
+# ajusté plus tard sans avoir à réimporter quoi que ce soit. Ne s'applique volontairement
+# pas à la purge par date (Réglages > Purger les données), qui supprime les appels sans
+# condition de durée.
+MIN_COMM_SECONDS = 7
+
+
 def calls_for_dimension(
     conn: sqlite3.Connection,
     dimension: str,
@@ -312,9 +322,9 @@ def calls_for_dimension(
     'code_affaire' (value = code affaire) ou 'tous' (value ignoré)."""
     base = (
         "SELECT calls.* FROM calls JOIN clients ON clients.sda = calls.sda "
-        "WHERE calls.date_heure >= ? AND calls.date_heure <= ?"
+        "WHERE calls.date_heure >= ? AND calls.date_heure <= ? AND calls.comm_seconds >= ?"
     )
-    params: list = [start_iso, end_iso]
+    params: list = [start_iso, end_iso, MIN_COMM_SECONDS]
     if dimension == "client" and value:
         base += " AND calls.sda = ?"
         params.append(value)
@@ -329,8 +339,12 @@ def calls_for_dimension(
 
 
 def months_with_calls(conn: sqlite3.Connection) -> list[str]:
-    """Liste des mois (YYYY-MM) pour lesquels au moins un appel est enregistré, triés."""
-    rows = conn.execute("SELECT DISTINCT substr(date_heure, 1, 7) AS ym FROM calls ORDER BY ym").fetchall()
+    """Liste des mois (YYYY-MM) pour lesquels au moins un appel comptabilisé (Comm >= seuil)
+    est enregistré, triés."""
+    rows = conn.execute(
+        "SELECT DISTINCT substr(date_heure, 1, 7) AS ym FROM calls WHERE comm_seconds >= ? ORDER BY ym",
+        (MIN_COMM_SECONDS,),
+    ).fetchall()
     return [r["ym"] for r in rows]
 
 
@@ -351,16 +365,20 @@ def purge_calls_before(conn: sqlite3.Connection, cutoff_iso: str) -> int:
 
 
 def call_count_for_client(conn: sqlite3.Connection, sda: str) -> int:
-    return conn.execute("SELECT COUNT(*) AS n FROM calls WHERE sda = ?", (sda,)).fetchone()["n"]
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM calls WHERE sda = ? AND comm_seconds >= ?", (sda, MIN_COMM_SECONDS)
+    ).fetchone()["n"]
 
 
 def call_count_for_operator(conn: sqlite3.Connection, login: str) -> int:
-    return conn.execute("SELECT COUNT(*) AS n FROM calls WHERE operateur = ?", (login,)).fetchone()["n"]
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM calls WHERE operateur = ? AND comm_seconds >= ?", (login, MIN_COMM_SECONDS)
+    ).fetchone()["n"]
 
 
 def last_call_date(conn: sqlite3.Connection, sda: str) -> Optional[str]:
     row = conn.execute(
-        "SELECT MAX(date_heure) AS d FROM calls WHERE sda = ?", (sda,)
+        "SELECT MAX(date_heure) AS d FROM calls WHERE sda = ? AND comm_seconds >= ?", (sda, MIN_COMM_SECONDS)
     ).fetchone()
     return row["d"] if row and row["d"] else None
 
