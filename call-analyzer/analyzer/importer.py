@@ -128,6 +128,9 @@ class ImportResult:
     invalid_rows: int = 0
     new_clients: list = field(default_factory=list)
     new_operators: list = field(default_factory=list)
+    # Uniquement renseigné par importer_legacy.py : {nom du fichier ancien -> nb d'appels}
+    # pour les noms de client non reconnus, rattachés à la fiche générique (client résilié).
+    unresolved_names: dict = field(default_factory=dict)
 
 
 def _iter_rows_xlsx(path: Path):

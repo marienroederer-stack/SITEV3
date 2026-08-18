@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from . import db, importer, report, stats
+from . import db, importer, importer_legacy, legacy_aliases, report, stats
 from .config import icon_path as app_icon_path
 
 APP_TITLE = "CADUCEA - Analyse interne des appels"
@@ -598,6 +598,9 @@ class ImportsLogTab(QWidget):
         purge_btn = QPushButton("Purger les données…")
         purge_btn.clicked.connect(self.on_purge)
         actions.addWidget(purge_btn)
+        legacy_btn = QPushButton("Importer un ancien fichier (avant 2024)…")
+        legacy_btn.clicked.connect(self.on_import_legacy)
+        actions.addWidget(legacy_btn)
         actions.addStretch(1)
         layout.addLayout(actions)
 
@@ -613,6 +616,52 @@ class ImportsLogTab(QWidget):
         dialog = PurgeDialog(self.conn, self)
         if dialog.exec() == QDialog.Accepted:
             self.on_data_changed()
+
+    def on_import_legacy(self):
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Importer un ancien journal d'appels (format sans SDA, avant 2024)",
+            "",
+            "Fichiers appels (*.xlsx *.xlsm *.csv)",
+        )
+        if not path_str:
+            return
+        try:
+            result = importer_legacy.import_legacy_file(self.conn, Path(path_str))
+        except Exception as exc:
+            traceback.print_exc()
+            QMessageBox.critical(self, APP_TITLE, f"Échec de l'import :\n{exc}")
+            return
+
+        self.on_data_changed()
+
+        unresolved_text = ""
+        if result.unresolved_names:
+            top = sorted(result.unresolved_names.items(), key=lambda x: -x[1])[:10]
+            lines = "\n".join(f"  • {nom} ({count} appel(s))" for nom, count in top)
+            more = len(result.unresolved_names) - len(top)
+            suffix = f"\n  … et {more} autre(s)" if more > 0 else ""
+            unresolved_text = (
+                f"\n\nClients non reconnus, rattachés à \"{legacy_aliases.PLACEHOLDER_NOM}\" "
+                f"({sum(result.unresolved_names.values())} appel(s) au total) :\n{lines}{suffix}"
+            )
+
+        QMessageBox.information(
+            self,
+            APP_TITLE,
+            (
+                f"Import (ancien format) terminé.\n\n"
+                f"Lignes lues : {result.total_rows}\n"
+                f"Appels ajoutés : {result.inserted}\n"
+                f"Déjà présents (ignorés) : {result.duplicates}\n"
+                f"Lignes invalides : {result.invalid_rows}\n"
+                f"Nouveaux opérateurs détectés : {len(result.new_operators)}\n\n"
+                f"Rappel : pour cette période, l'attente globale ne reflète que la sonnerie "
+                f"(pas de file/annonce dans ce format) et les ratios d'appels longs ne sont pas "
+                f"disponibles (pas de Durée Totale)."
+            )
+            + unresolved_text,
+        )
 
     def reload(self):
         imports = db.list_imports(self.conn)
