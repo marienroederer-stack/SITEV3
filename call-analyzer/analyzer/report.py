@@ -134,19 +134,27 @@ def _summary_stats_html(summary: Summary) -> str:
 
 
 def _comparison_section_html(current_label: str, current: Summary, compare_label: str, compare: Summary) -> str:
-    def delta(a, b, kind: str):
-        d = a - b
+    def raw_delta_text(d: float, kind: str) -> str:
         sign = "+" if d >= 0 else ""
-        cls = "up" if d > 0 else ("down" if d < 0 else "")
         if kind == "int":
-            text = f"{sign}{int(round(d))}"
-        elif kind == "duration":
-            text = f"{sign}{_fmt_duration(abs(d))}" if d != 0 else "0 s"
-            if d < 0:
-                text = f"-{_fmt_duration(abs(d))}"
-        else:  # pct
-            text = f"{sign}{_fmt_num(d)} pt"
-        return f'<span class="delta {cls}">{text}</span>'
+            return f"{sign}{int(round(d))}"
+        if kind == "duration":
+            return f"{sign}{_fmt_duration(abs(d))}" if d >= 0 else f"-{_fmt_duration(abs(d))}"
+        return f"{sign}{_fmt_num(d)} pt"  # écart en points, pour un taux déjà exprimé en %
+
+    def delta(a: float, b: float, kind: str):
+        """Écart affiché en pourcentage d'évolution par rapport à la valeur de comparaison,
+        avec l'écart brut (dans son unité propre) visible au survol."""
+        d = a - b
+        cls = "up" if d > 0 else ("down" if d < 0 else "")
+        tooltip = html.escape(f"Écart : {raw_delta_text(d, kind)}")
+        if b == 0:
+            text = "0,0 %" if a == 0 else "—"
+        else:
+            pct = d / b * 100
+            sign = "+" if pct >= 0 else ""
+            text = f"{sign}{_fmt_num(pct)} %"
+        return f'<span class="delta {cls}" title="{tooltip}">{text}</span>'
 
     rows = [
         ("Appels entrants", current.total_calls, compare.total_calls, lambda x: str(int(x)), "int"),
@@ -232,6 +240,7 @@ TEMPLATE = """<!doctype html>
   .total-row th, .total-row td {{ background: #e9f0ff; font-weight: 700; }}
   th.off-day, td.off-day {{ background: #f0f0f0 !important; color: #bbb; }}
   table.compare-table td, table.compare-table th {{ white-space: normal; }}
+  .delta {{ cursor: help; border-bottom: 1px dotted currentColor; }}
   .delta.up {{ color: #0a7a2f; }}
   .delta.down {{ color: #b3261e; }}
 
@@ -311,6 +320,8 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
   table {{ border-collapse: collapse; width: 100%; }}
   th, td {{ border: 1px solid var(--border); text-align: center; padding: 8px 10px; font-size: 0.85rem; }}
   th {{ background: var(--bg-alt); color: var(--blue-dark); font-weight: 600; }}
+  .table-scroll {{ overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }}
+  .table-scroll table {{ border: none; white-space: nowrap; }}
   td:first-child, th:first-child {{ text-align: left; font-weight: 600; }}
   tr:nth-child(even) td {{ background: var(--bg-alt); }}
   tr.total-row td {{ background: #e9f0ff; font-weight: 700; border-top: 2px solid var(--blue-dark); }}
@@ -453,4 +464,39 @@ def render_dimension_breakdown(
         title=html.escape(f"Comparaison — {DIMENSION_PLURAL_LABELS.get(dimension, dimension)} — {period_label}"),
         table=table_html,
         note="Triée par nombre d'appels décroissant. Seules les valeurs ayant au moins un appel sur la période sont affichées.",
+    )
+
+
+def render_long_term_comparison(label: str, rows: list) -> str:
+    """Comparaison sur le long terme : un mois par colonne (voir
+    stats.build_monthly_synthesis), un sous-ensemble d'indicateurs clés par ligne — pour
+    garder le tableau lisible même avec de nombreux mois importés."""
+    month_labels = []
+    for ym, _ in rows:
+        year, month = ym.split("-")
+        month_labels.append(f"{_MOIS[int(month) - 1].capitalize()} {year}")
+
+    header_cells = "<th>Indicateur</th>" + "".join(f"<th>{html.escape(m)}</th>" for m in month_labels)
+
+    metric_rows = [
+        ("Nombre d'appels", lambda s: str(s.total_calls)),
+        ("Durée moyenne de traitement (DMT)", lambda s: _fmt_duration(s.avg_comm_seconds)),
+        ("Appels > 3 min", lambda s: _fmt_pct(s.ratios.get(3, 0.0))),
+        ("Appels > 6 min", lambda s: _fmt_pct(s.ratios.get(6, 0.0))),
+        ("Taux de TAG", lambda s: _fmt_pct(s.tag_rate_pct)),
+    ]
+    body_rows = []
+    for metric_label, fmt_fn in metric_rows:
+        cells = "".join(f"<td>{fmt_fn(summary)}</td>" for _, summary in rows)
+        body_rows.append(f"<tr><th>{html.escape(metric_label)}</th>{cells}</tr>")
+
+    table_html = (
+        '<div class="table-scroll"><table>'
+        f"<thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>"
+    )
+
+    return SYNTHESIS_TEMPLATE.format(
+        title=html.escape(f"Comparaison long terme — {label}"),
+        table=table_html,
+        note="Un mois sans appel pour cette sélection apparaît avec des totaux à zéro plutôt que d'être omis.",
     )

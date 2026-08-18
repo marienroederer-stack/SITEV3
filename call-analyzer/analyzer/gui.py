@@ -397,6 +397,77 @@ class BreakdownDialog(QDialog):
         export_web_view_to_pdf(self, self.web_view, slug + ".pdf")
 
 
+class LongTermTab(QWidget):
+    """Comparaison sur le long terme : tous les mois importés en colonnes, un
+    sous-ensemble d'indicateurs clés en lignes, pour un client ou un opérateur choisi."""
+
+    def __init__(self, conn):
+        super().__init__()
+        self.conn = conn
+
+        layout = QVBoxLayout(self)
+
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Comparer par :"))
+        self.dimension_combo = QComboBox()
+        self.dimension_combo.addItem("Client", "client")
+        self.dimension_combo.addItem("Opérateur", "operateur")
+        self.dimension_combo.currentIndexChanged.connect(self._on_dimension_changed)
+        controls.addWidget(self.dimension_combo)
+
+        controls.addWidget(QLabel("Valeur :"))
+        self.value_combo = SearchableComboBox()
+        self.value_combo.currentIndexChanged.connect(self.refresh)
+        controls.addWidget(self.value_combo, 1)
+
+        export_btn = QPushButton("Exporter PDF")
+        export_btn.clicked.connect(self.on_export_pdf)
+        controls.addWidget(export_btn)
+
+        layout.addLayout(controls)
+
+        self.web_view = QWebEngineView()
+        self.web_view.page().printRequested.connect(self.on_export_pdf)
+        layout.addWidget(self.web_view, 1)
+
+        self.reload_values()
+
+    @property
+    def dimension(self) -> str:
+        return self.dimension_combo.currentData()
+
+    def _on_dimension_changed(self):
+        self.reload_values()
+
+    def reload_values(self):
+        current = self.value_combo.currentData()
+        self.value_combo.blockSignals(True)
+        self.value_combo.clear()
+        self.value_combo.addItem(DIMENSION_ALL_LABELS[self.dimension], None)
+        if self.dimension == "client":
+            for c in db.list_clients(self.conn):
+                self.value_combo.addItem(f"{c.label} ({c.sda})", c.sda)
+        else:
+            self.value_combo.addItem("Non attribué", "")
+            for o in db.list_operators(self.conn):
+                self.value_combo.addItem(f"{o.label} ({o.login})", o.login)
+        idx = self.value_combo.findData(current) if current is not None else -1
+        self.value_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.value_combo.blockSignals(False)
+        self.refresh()
+
+    def refresh(self):
+        value = self.value_combo.currentData()
+        label = self.value_combo.currentText()
+        rows = stats.build_monthly_synthesis(self.conn, self.dimension, value)
+        html_content = report.render_long_term_comparison(label, rows)
+        self.web_view.setHtml(html_content)
+
+    def on_export_pdf(self):
+        slug = _slugify(f"comparaison-long-terme-{self.dimension}-{self.value_combo.currentText()}")
+        export_web_view_to_pdf(self, self.web_view, slug + ".pdf")
+
+
 class DirectoryTableBase(QWidget):
     """Base commune pour les onglets 'Listing clients' / 'Listing opérateurs'."""
 
@@ -517,10 +588,19 @@ class ImportsLogTab(QWidget):
         "Non entrants (filtrées)", "Invalides", "Nouveaux clients", "Nouveaux opérateurs",
     ]
 
-    def __init__(self, conn):
+    def __init__(self, conn, on_data_changed):
         super().__init__()
         self.conn = conn
+        self.on_data_changed = on_data_changed
         layout = QVBoxLayout(self)
+
+        actions = QHBoxLayout()
+        purge_btn = QPushButton("Purger les données…")
+        purge_btn.clicked.connect(self.on_purge)
+        actions.addWidget(purge_btn)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
@@ -528,6 +608,11 @@ class ImportsLogTab(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         layout.addWidget(self.table, 1)
         self.reload()
+
+    def on_purge(self):
+        dialog = PurgeDialog(self.conn, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.on_data_changed()
 
     def reload(self):
         imports = db.list_imports(self.conn)
@@ -642,9 +727,6 @@ class MainWindow(QMainWindow):
         import_btn = QPushButton("Importer un fichier…")
         import_btn.clicked.connect(self.on_import)
         toolbar.addWidget(import_btn)
-        purge_btn = QPushButton("Purger les données…")
-        purge_btn.clicked.connect(self.on_purge)
-        toolbar.addWidget(purge_btn)
         self.import_status = QLabel("Aucun import effectué.")
         toolbar.addWidget(self.import_status, 1)
         root.addLayout(toolbar)
@@ -655,13 +737,15 @@ class MainWindow(QMainWindow):
         self.client_tab = AnalysisTab(self.conn, "client", "Client")
         self.operateur_tab = AnalysisTab(self.conn, "operateur", "Opérateur")
         self.code_affaire_tab = AnalysisTab(self.conn, "code_affaire", "Code affaire")
+        self.long_term_tab = LongTermTab(self.conn)
         self.clients_listing_tab = ClientsListingTab(self.conn)
         self.operators_listing_tab = OperatorsListingTab(self.conn)
-        self.imports_log_tab = ImportsLogTab(self.conn)
+        self.imports_log_tab = ImportsLogTab(self.conn, self._refresh_all_tabs)
 
         self.tabs.addTab(self.client_tab, "Par client")
         self.tabs.addTab(self.operateur_tab, "Par opérateur")
         self.tabs.addTab(self.code_affaire_tab, "Par code affaire")
+        self.tabs.addTab(self.long_term_tab, "Comparaison long terme")
         self.tabs.addTab(self.clients_listing_tab, "Listing clients")
         self.tabs.addTab(self.operators_listing_tab, "Listing opérateurs")
         self.tabs.addTab(self.imports_log_tab, "Journal des imports")
@@ -693,6 +777,7 @@ class MainWindow(QMainWindow):
             tab.reload_values()
             tab.reload_compare_months()
             tab.refresh()
+        self.long_term_tab.reload_values()
         self.clients_listing_tab.reload()
         self.operators_listing_tab.reload()
         self.imports_log_tab.reload()
@@ -727,12 +812,6 @@ class MainWindow(QMainWindow):
                 f"Nouveaux opérateurs détectés : {len(result.new_operators)}"
             ),
         )
-
-    def on_purge(self):
-        dialog = PurgeDialog(self.conn, self)
-        if dialog.exec() == QDialog.Accepted:
-            self._refresh_all_tabs()
-            QMessageBox.information(self, APP_TITLE, "Purge terminée.")
 
 
 def main():
