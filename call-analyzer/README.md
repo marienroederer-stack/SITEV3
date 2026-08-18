@@ -33,8 +33,8 @@ taux de TAG... Indépendante de l'application "DOCTEL - analyse appels entrants"
     fin de ligne), durée moyenne de traitement (colonne Comm), attente
     moyenne globale (Annonce + File + Sonnerie), attente moyenne sur
     sonnerie seule, ratios d'appels de plus de 3/4/5/6 minutes (colonne
-    Durée Totale) et taux de TAG (part des appels avec un tag renseigné),
-    avec répartition par catégorie de tag.
+    Comm, durée de communication réelle) et taux de TAG (part des appels
+    avec un tag renseigné), avec répartition par catégorie de tag.
 - **Journal des imports** : historique des fichiers importés et de leur effet
   (lignes lues/ajoutées/doublons/nouveaux clients ou opérateurs).
 
