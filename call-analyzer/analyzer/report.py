@@ -317,6 +317,8 @@ SYNTHESIS_TEMPLATE = """<!doctype html>
   * {{ box-sizing: border-box; }}
   body {{ margin: 0; padding: 32px; font-family: 'Montserrat', Arial, sans-serif; color: var(--text); background: #fff; }}
   h1 {{ font-size: 1.4rem; color: var(--blue-dark); margin: 0 0 20px; }}
+  h2 {{ font-size: 1.1rem; color: var(--blue-dark); margin: 28px 0 10px; }}
+  h2:first-of-type {{ margin-top: 0; }}
   table {{ border-collapse: collapse; width: 100%; }}
   th, td {{ border: 1px solid var(--border); text-align: center; padding: 8px 10px; font-size: 0.85rem; }}
   th {{ background: var(--bg-alt); color: var(--blue-dark); font-weight: 600; }}
@@ -468,15 +470,15 @@ def render_dimension_breakdown(
 
 
 def render_long_term_comparison(label: str, rows: list) -> str:
-    """Comparaison sur le long terme : un mois par colonne (voir
-    stats.build_monthly_synthesis), un sous-ensemble d'indicateurs clés par ligne — pour
-    garder le tableau lisible même avec de nombreux mois importés."""
-    month_labels = []
-    for ym, _ in rows:
-        year, month = ym.split("-")
-        month_labels.append(f"{_MOIS[int(month) - 1].capitalize()} {year}")
-
-    header_cells = "<th>Indicateur</th>" + "".join(f"<th>{html.escape(m)}</th>" for m in month_labels)
+    """Comparaison sur le long terme : un tableau par année (l'année la plus récente en
+    premier), les mois de l'année en colonnes et un sous-ensemble d'indicateurs clés en
+    lignes (voir stats.build_monthly_synthesis pour `rows`). Une nouvelle année apparaît
+    automatiquement dès qu'elle contient au moins un mois importé — aucune liste d'années
+    à tenir à jour."""
+    by_year: dict = {}
+    for ym, summary in rows:
+        year = ym.split("-")[0]
+        by_year.setdefault(year, []).append((ym, summary))
 
     metric_rows = [
         ("Nombre d'appels", lambda s: str(s.total_calls)),
@@ -485,18 +487,26 @@ def render_long_term_comparison(label: str, rows: list) -> str:
         ("Appels > 6 min", lambda s: _fmt_pct(s.ratios.get(6, 0.0))),
         ("Taux de TAG", lambda s: _fmt_pct(s.tag_rate_pct)),
     ]
-    body_rows = []
-    for metric_label, fmt_fn in metric_rows:
-        cells = "".join(f"<td>{fmt_fn(summary)}</td>" for _, summary in rows)
-        body_rows.append(f"<tr><th>{html.escape(metric_label)}</th>{cells}</tr>")
 
-    table_html = (
-        '<div class="table-scroll"><table>'
-        f"<thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>"
-    )
+    sections = []
+    for year in sorted(by_year, reverse=True):
+        year_rows = by_year[year]
+        month_labels = [_MOIS[int(ym.split("-")[1]) - 1].capitalize() for ym, _ in year_rows]
+        header_cells = "<th>Indicateur</th>" + "".join(f"<th>{html.escape(m)}</th>" for m in month_labels)
+
+        body_rows = []
+        for metric_label, fmt_fn in metric_rows:
+            cells = "".join(f"<td>{fmt_fn(summary)}</td>" for _, summary in year_rows)
+            body_rows.append(f"<tr><th>{html.escape(metric_label)}</th>{cells}</tr>")
+
+        table_html = (
+            '<div class="table-scroll"><table>'
+            f"<thead><tr>{header_cells}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>"
+        )
+        sections.append(f"<h2>{html.escape(year)}</h2>{table_html}")
 
     return SYNTHESIS_TEMPLATE.format(
         title=html.escape(f"Comparaison long terme — {label}"),
-        table=table_html,
+        table="".join(sections),
         note="Un mois sans appel pour cette sélection apparaît avec des totaux à zéro plutôt que d'être omis.",
     )
