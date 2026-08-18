@@ -36,7 +36,16 @@ taux de TAG... Indépendante de l'application "DOCTEL - analyse appels entrants"
     Comm, durée de communication réelle) et taux de TAG (part des appels
     avec un tag renseigné), avec répartition par catégorie de tag.
 - **Journal des imports** : historique des fichiers importés et de leur effet
-  (lignes lues/ajoutées/doublons/nouveaux clients ou opérateurs).
+  (lignes lues/ajoutées/doublons/nouveaux clients ou opérateurs). Contient aussi :
+  - **Archiver une année…** : fige durablement en base la synthèse mensuelle globale
+    (tous clients/opérateurs confondus — nombre d'appels, DMT, ratios d'appels longs,
+    taux de TAG) telle qu'affichée dans "Comparaison long terme" pour "Tous les
+    clients"/"Tous les opérateurs". Une fois une année archivée, ses tableaux globaux de
+    comparaison long terme restent visibles même après avoir purgé les appels détaillés
+    de cette période (seul le détail par client/opérateur est alors perdu, pas ces
+    tableaux globaux) — utile pour garder un historique complet sans faire grossir
+    indéfiniment la base pour des données anciennes (+ de 5 ans, par exemple).
+  - **Purger les données…** : purge par date, inchangée.
 
 Horaires retenus pour la grille : lundi-vendredi 8h-20h, samedi 8h-12h,
 dimanche fermé (horaires d'ouverture réels du standard).
