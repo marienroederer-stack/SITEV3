@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QMarginsF, Qt, QTimer
+from PySide6.QtCore import QEvent, QMarginsF, QObject, Qt, QTimer
 from PySide6.QtGui import QIcon, QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,6 +40,22 @@ from .db import Client
 APP_TITLE = "DOCTEL - analyse appels entrants"
 
 
+class _SelectAllOnFocusFilter(QObject):
+    """Sélectionne tout le texte d'un champ dès qu'il reçoit le focus (clic ou tabulation),
+    pour que la frappe remplace directement le contenu au lieu de l'insérer au milieu."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.FocusIn:
+            QTimer.singleShot(0, obj.selectAll)
+        return False
+
+
+def _select_all_on_focus(line_edit: QLineEdit) -> None:
+    line_filter = _SelectAllOnFocusFilter(line_edit)
+    line_edit.installEventFilter(line_filter)
+    line_edit._select_all_filter = line_filter  # garde une référence pour éviter le garbage collection
+
+
 class ClientsSettingsTab(QWidget):
     def __init__(self, conn, on_saved):
         super().__init__()
@@ -59,6 +75,7 @@ class ClientsSettingsTab(QWidget):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Rechercher un client (nom, quelques caractères suffisent)…")
         self.search_edit.textChanged.connect(self._filter_table)
+        _select_all_on_focus(self.search_edit)
         layout.addWidget(self.search_edit)
 
         self.table = QTableWidget(0, 5)
@@ -154,6 +171,7 @@ class TarifsSettingsTab(QWidget):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Rechercher un client…")
         self.search_edit.textChanged.connect(self._filter_table)
+        _select_all_on_focus(self.search_edit)
         layout.addWidget(self.search_edit)
 
         self.table = QTableWidget(0, 6)
@@ -566,6 +584,7 @@ class MainWindow(QMainWindow):
         combo_completer.setCompletionMode(QCompleter.PopupCompletion)
         combo_completer.setFilterMode(Qt.MatchContains)
         combo_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        _select_all_on_focus(self.client_combo.lineEdit())
         self.client_combo.currentIndexChanged.connect(self.on_client_changed)
         toolbar.addWidget(self.client_combo, 1)
 
