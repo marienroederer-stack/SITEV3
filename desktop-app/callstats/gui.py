@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QMarginsF, QObject, Qt, QTimer
+from PySide6.QtCore import QMarginsF, Qt, QTimer
 from PySide6.QtGui import QIcon, QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,27 +33,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from . import db, ftp_publish, importer, importer_sortants, report, report_sortants, stats, stats_sortants
+from . import db, ftp_publish, importer, importer_sortants, report, report_sortants, stats, stats_sortants, webapi_publish
 from .config import resource_path
 from .db import Client
 
 APP_TITLE = "DOCTEL - analyse appels entrants"
-
-
-class _SelectAllOnFocusFilter(QObject):
-    """Sélectionne tout le texte d'un champ dès qu'il reçoit le focus (clic ou tabulation),
-    pour que la frappe remplace directement le contenu au lieu de l'insérer au milieu."""
-
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.FocusIn:
-            QTimer.singleShot(0, obj.selectAll)
-        return False
-
-
-def _select_all_on_focus(line_edit: QLineEdit) -> None:
-    line_filter = _SelectAllOnFocusFilter(line_edit)
-    line_edit.installEventFilter(line_filter)
-    line_edit._select_all_filter = line_filter  # garde une référence pour éviter le garbage collection
 
 
 class ClientsSettingsTab(QWidget):
@@ -75,7 +59,6 @@ class ClientsSettingsTab(QWidget):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Rechercher un client (nom, quelques caractères suffisent)…")
         self.search_edit.textChanged.connect(self._filter_table)
-        _select_all_on_focus(self.search_edit)
         layout.addWidget(self.search_edit)
 
         self.table = QTableWidget(0, 5)
@@ -171,7 +154,6 @@ class TarifsSettingsTab(QWidget):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Rechercher un client…")
         self.search_edit.textChanged.connect(self._filter_table)
-        _select_all_on_focus(self.search_edit)
         layout.addWidget(self.search_edit)
 
         self.table = QTableWidget(0, 6)
@@ -310,6 +292,14 @@ class PublishSettingsTab(QWidget):
         self.base_url.setPlaceholderText("https://doctel.fr/rapports")
         form.addRow("URL publique de base", self.base_url)
 
+        self.webapi_url = QLineEdit()
+        self.webapi_url.setPlaceholderText("https://doctel.fr/espace-client/api/update.php")
+        form.addRow("URL API espace client", self.webapi_url)
+
+        self.webapi_key = QLineEdit()
+        self.webapi_key.setEchoMode(QLineEdit.Password)
+        form.addRow("Clé API espace client", self.webapi_key)
+
         save_btn = QPushButton("Enregistrer les identifiants de publication")
         save_btn.clicked.connect(self._save)
         form.addRow(save_btn)
@@ -332,6 +322,13 @@ class PublishSettingsTab(QWidget):
                 pass
         self.remote_dir.setText(db.get_setting(c, "ftp_remote_dir", "/rapports"))
         self.base_url.setText(db.get_setting(c, "ftp_base_url"))
+        self.webapi_url.setText(db.get_setting(c, "webapi_url"))
+        encrypted_key = db.get_setting(c, "webapi_key")
+        if encrypted_key:
+            try:
+                self.webapi_key.setText(crypto_store.decrypt(encrypted_key))
+            except Exception:
+                pass
 
     def _save(self):
         from . import crypto_store
@@ -344,6 +341,8 @@ class PublishSettingsTab(QWidget):
         db.set_setting(c, "ftp_password", crypto_store.encrypt(self.password.text()))
         db.set_setting(c, "ftp_remote_dir", self.remote_dir.text().strip() or "/rapports")
         db.set_setting(c, "ftp_base_url", self.base_url.text().strip())
+        db.set_setting(c, "webapi_url", self.webapi_url.text().strip())
+        db.set_setting(c, "webapi_key", crypto_store.encrypt(self.webapi_key.text()))
         c.commit()
         QMessageBox.information(self, APP_TITLE, "Identifiants de publication enregistrés.")
 
@@ -363,6 +362,16 @@ class PublishSettingsTab(QWidget):
 
         encrypted = db.get_setting(self.conn, "ftp_password")
         return crypto_store.decrypt(encrypted) if encrypted else ""
+
+    def get_webapi_config(self) -> Optional["webapi_publish.WebApiConfig"]:
+        api_url = db.get_setting(self.conn, "webapi_url")
+        if not api_url:
+            return None
+        from . import crypto_store
+
+        encrypted_key = db.get_setting(self.conn, "webapi_key")
+        api_key = crypto_store.decrypt(encrypted_key) if encrypted_key else ""
+        return webapi_publish.WebApiConfig(api_url=api_url, api_key=api_key)
 
 
 class ArchiveSettingsTab(QWidget):
@@ -557,7 +566,6 @@ class MainWindow(QMainWindow):
         combo_completer.setCompletionMode(QCompleter.PopupCompletion)
         combo_completer.setFilterMode(Qt.MatchContains)
         combo_completer.setCaseSensitivity(Qt.CaseInsensitive)
-        _select_all_on_focus(self.client_combo.lineEdit())
         self.client_combo.currentIndexChanged.connect(self.on_client_changed)
         toolbar.addWidget(self.client_combo, 1)
 
@@ -887,7 +895,11 @@ class MainWindow(QMainWindow):
             )
             return
 
-        slug = client.slug + self._active_filename_suffix()
+        start, end = stats.get_period(self.current_cycle_start_day(), date.today(), self.period_offset)
+        # Nom de fichier propre à ce mois : sans ça, chaque publication écraserait celle
+        # du mois précédent (même client, même nom de fichier), et "Voir" afficherait
+        # toujours le dernier mois envoyé quel que soit le mois cliqué dans l'espace client.
+        slug = client.slug + self._active_filename_suffix() + "-" + start.strftime("%Y-%m")
         try:
             url = ftp_publish.publish(config, slug, html_content)
         except Exception as exc:
@@ -895,7 +907,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, APP_TITLE, f"Échec de la publication :\n{exc}")
             return
 
-        QMessageBox.information(self, APP_TITLE, f"Rapport publié avec succès :\n{url}")
+        message = f"Rapport publié avec succès :\n{url}"
+
+        webapi_config = tab.get_webapi_config()
+        if webapi_config is not None:
+            is_entrants = self.tabs.currentIndex() == 0
+            nb_appels = self.current_data.total_calls if is_entrants and self.current_data else None
+            try:
+                webapi_publish.notify(
+                    webapi_config,
+                    slug=client.slug,
+                    annee=start.year,
+                    mois=start.month,
+                    type_="entrants" if is_entrants else "sortants",
+                    url=url,
+                    nb_appels=nb_appels,
+                    periode_debut=start.isoformat(),
+                    periode_fin=end.isoformat(),
+                )
+            except Exception as exc:
+                traceback.print_exc()
+                message += f"\n\nAttention : la mise à jour de l'espace client a échoué :\n{exc}"
+
+        QMessageBox.information(self, APP_TITLE, message)
 
     def _default_filename(self) -> str:
         client = self.current_client()
