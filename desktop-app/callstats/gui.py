@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QMarginsF, QObject, Qt, QTimer
+from PySide6.QtCore import QMarginsF, Qt, QTimer
 from PySide6.QtGui import QIcon, QPageLayout, QPageSize
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,20 +40,24 @@ from .db import Client
 APP_TITLE = "DOCTEL - analyse appels entrants"
 
 
-class _SelectAllOnFocusFilter(QObject):
-    """Sélectionne tout le texte d'un champ dès qu'il reçoit le focus (clic ou tabulation),
-    pour que la frappe remplace directement le contenu au lieu de l'insérer au milieu."""
+class _SelectAllLineEdit(QLineEdit):
+    """Champ de texte qui sélectionne tout son contenu à chaque clic, pour que la frappe le
+    remplace directement au lieu de s'insérer au milieu.
 
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.FocusIn:
-            QTimer.singleShot(0, obj.selectAll)
-        return False
+    Un simple filtre sur l'événement FocusIn ne suffit pas : il ne se déclenche qu'au premier
+    clic (quand le champ n'a pas encore le focus). Un second clic sur un champ déjà focalisé ne
+    génère pas de nouveau FocusIn, donc rien ne serait sélectionné - d'où la gestion explicite du
+    clic souris en plus."""
 
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        QTimer.singleShot(0, self.selectAll)
 
-def _select_all_on_focus(line_edit: QLineEdit) -> None:
-    line_filter = _SelectAllOnFocusFilter(line_edit)
-    line_edit.installEventFilter(line_filter)
-    line_edit._select_all_filter = line_filter  # garde une référence pour éviter le garbage collection
+    def mousePressEvent(self, event):
+        already_focused = self.hasFocus()
+        super().mousePressEvent(event)
+        if already_focused:
+            self.selectAll()
 
 
 class ClientsSettingsTab(QWidget):
@@ -72,10 +76,9 @@ class ClientsSettingsTab(QWidget):
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
-        self.search_edit = QLineEdit()
+        self.search_edit = _SelectAllLineEdit()
         self.search_edit.setPlaceholderText("Rechercher un client (nom, quelques caractères suffisent)…")
         self.search_edit.textChanged.connect(self._filter_table)
-        _select_all_on_focus(self.search_edit)
         layout.addWidget(self.search_edit)
 
         self.table = QTableWidget(0, 5)
@@ -168,10 +171,9 @@ class TarifsSettingsTab(QWidget):
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
-        self.search_edit = QLineEdit()
+        self.search_edit = _SelectAllLineEdit()
         self.search_edit.setPlaceholderText("Rechercher un client…")
         self.search_edit.textChanged.connect(self._filter_table)
-        _select_all_on_focus(self.search_edit)
         layout.addWidget(self.search_edit)
 
         self.table = QTableWidget(0, 6)
@@ -579,12 +581,13 @@ class MainWindow(QMainWindow):
         self.client_combo = QComboBox()
         self.client_combo.setEditable(True)
         self.client_combo.setInsertPolicy(QComboBox.NoInsert)
+        # Champ personnalisé pour sélectionner tout le texte au clic (voir _SelectAllLineEdit).
+        self.client_combo.setLineEdit(_SelectAllLineEdit())
         # Tapez quelques lettres (ex : "BERT") pour filtrer la liste, où qu'elles apparaissent dans le nom.
         combo_completer = self.client_combo.completer()
         combo_completer.setCompletionMode(QCompleter.PopupCompletion)
         combo_completer.setFilterMode(Qt.MatchContains)
         combo_completer.setCaseSensitivity(Qt.CaseInsensitive)
-        _select_all_on_focus(self.client_combo.lineEdit())
         self.client_combo.currentIndexChanged.connect(self.on_client_changed)
         toolbar.addWidget(self.client_combo, 1)
 
